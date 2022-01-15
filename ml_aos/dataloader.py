@@ -42,6 +42,8 @@ class Donuts(Dataset):
     ):
         """Load the simulated AOS donuts and zernikes in a Pytorch Dataset.
 
+        Parameters
+        ----------
         mode: str, default="train"
             Which set to load. Options are train, val (i.e. validation),
             or test.
@@ -110,10 +112,29 @@ class Donuts(Dataset):
         self.blended_df = blended_df.loc[index[index >= self.N_UNBLENDED]]
 
     def __len__(self) -> int:
+        """Return length of this Dataset."""
         return len(self.unblended_df) + len(self.blended_df)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        """Return simulation corresponding to the index."""
+        """Return simulation corresponding to the index.
+
+        Parameters
+        ----------
+        idx: int
+            The index of the simulation to return.
+            Valid values are [0, len(self) - 1], inclusive.
+
+        Returns
+        -------
+        dict
+            The dictionary contains the following pytorch tensors
+                image: cenered donut image, shape=(256, 256)
+                field_x, field_y: the field location in radians
+                focal_x, focal_y: the focal plane position in radians
+                intrafocal: boolean flag. 0 = extrafocal, 1 = intrafocal
+                blended: boolean flag. 0 = unblended, 1 = blended
+                zernikes: Noll zernikes coefficients 4-21, inclusive
+        """
         if idx < 0 or idx > len(self):
             raise ValueError("idx out of bounds.")
 
@@ -140,10 +161,10 @@ class Donuts(Dataset):
             "field_x": torch.FloatTensor([fx]),
             "field_y": torch.FloatTensor([fy]),
             "focal_x": torch.FloatTensor([px]),
-            "focal_y": torch.FloatTensor([px]),
+            "focal_y": torch.FloatTensor([py]),
             "intrafocal": torch.FloatTensor([intra]),
-            "zernikes": torch.from_numpy(zernikes),
             "blended": torch.ByteTensor([blend_flag]),
+            "zernikes": torch.from_numpy(zernikes),
         }
 
         return output
@@ -161,7 +182,29 @@ class Donuts(Dataset):
         bool,
         npt.NDArray[np.float64],
     ]:
-        """Return an unblended simulation."""
+        """Return an unblended simulation.
+
+        Parameters
+        ----------
+        idx: int
+            The index of the simulation. These refer to the pandas indices
+            listed in self.unblended_df and self.blended_df.
+        blend_idx: int, optional
+            The neighborId lists in self.blended_df.
+
+        Returns
+        -------
+        img: np.ndarray, shape=(256, 256)
+            centered donut image
+        fx, fy: float
+            the field location in radians
+        px, py: float
+            the focal plane position in radians
+        intrafocal: bool
+            True = intrafocal, False = extrafocal
+        zernikes: np.ndarray, shape=(18,)
+            Noll zernikes coefficients 4-21, inclusive
+        """
 
         if blend_idx is None:
             img_file = self.DATA_DIR + f"unblended/{idx}.image"
@@ -203,7 +246,27 @@ class Donuts(Dataset):
         bool,
         npt.NDArray[np.float64],
     ]:
-        """Return a blended simulation."""
+        """Return a blended simulation.
+
+        Parameters
+        ----------
+        idx: int
+            The index of the simulation. These refer to the pandas indices
+            listed in self.blended_df.
+
+        Returns
+        -------
+        img: np.ndarray, shape=(256, 256)
+            image of all blending donuts, centered on the primary donut
+        fx, fy: float
+            the field location of the primary donut in radians
+        px, py: float
+            the focal plane position of the primary donut in radians
+        intrafocal: bool
+            True = intrafocal, False = extrafocal
+        zernikes: np.ndarray, shape=(18,)
+            Noll zernikes coefficients 4-21, inclusive
+        """
         # get the central star
         img, fx, fy, px, py, intra, zernikes = self._get_unblended(
             idx, blend_idx=0
