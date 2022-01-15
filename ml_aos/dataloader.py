@@ -36,9 +36,9 @@ class Donuts(Dataset):
         badpix: bool = True,
         dither: bool = True,
         mask_blends: bool = False,
-        fix_seed: bool = True,
         nval: int = 2 ** 16,
         ntest: int = 2 ** 16,
+        seed: int = 0,
     ):
         """Load the simulated AOS donuts and zernikes in a Pytorch Dataset.
 
@@ -55,12 +55,12 @@ class Donuts(Dataset):
             Whether to simulate mis-centering by a few pixels.
         mask_blends: bool, default=False
             Whether to mask the blends.
-        fix_seed: bool, default=True
-            I don't know yet!
         nval: int, default=256
             Number of donuts in the validation set.
         ntest: int, default=2048
             Number of donuts in the test set
+        seed: int, default=0
+            Random seed for training set/test set/validation set selection.
         """
         # check that the mode is valid
         allowed_modes = ["train", "val", "test"]
@@ -75,27 +75,20 @@ class Donuts(Dataset):
             "badpix": badpix,
             "dither": dither,
             "mask_blends": mask_blends,
-            "fix_seed": fix_seed,
         }
 
-        # load the sky simulations
-        self.sky = np.loadtxt(self.DATA_DIR + "sky.csv")
-
-        # set random seeds
-        self._rng_galsim = galsim.BaseDeviate(0)
-        self._rng_numpy = np.random.default_rng(0)
-
         # determine the indices of the val and test sets
-        holdout = self._rng_numpy.choice(
+        rng = np.random.default_rng(seed)
+        holdout = rng.choice(
             self.N_UNBLENDED + self.N_BLENDED, nval + ntest, replace=False
         )
 
         # get the indices corresponding to the requested mode
         self.mode = mode
         if mode == "train":
-            train = set(np.arange(Donuts.N_UNBLENDED + Donuts.N_BLENDED))
-            train -= set(holdout)
-            index = np.array(list(train))  # type: npt.NDArray[np.int64]
+            all_index = np.arange(Donuts.N_UNBLENDED + Donuts.N_BLENDED)
+            train_index = set(all_index) - set(holdout)
+            index = np.array(list(train_index))  # type: npt.NDArray[np.int64]
         elif mode == "val":
             index = holdout[:nval]
         else:
@@ -110,6 +103,9 @@ class Donuts(Dataset):
         blended_df = pd.read_csv(self.DATA_DIR + "blended/record.csv")
         blended_df = blended_df.set_index(blended_df["idx"] + self.N_UNBLENDED)
         self.blended_df = blended_df.loc[index[index >= self.N_UNBLENDED]]
+
+        # load the sky simulations
+        self.sky = np.loadtxt(self.DATA_DIR + "sky.csv")
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
@@ -148,9 +144,9 @@ class Donuts(Dataset):
 
         # apply image distortions
         settings = self.settings
-        img = self._apply_sky(idx, img) if settings["background"] else img
-        img = self._apply_badpix(idx, img) if settings["badpix"] else img
-        img = self._apply_dither(idx, img) if settings["dither"] else img
+        img = self._apply_sky(img, seed=idx) if settings["background"] else img
+        img = self._apply_dither(img, seed=idx) if settings["dither"] else img
+        img = self._apply_badpix(img, seed=idx) if settings["badpix"] else img
 
         # cast NaNs to zero
         img = np.nan_to_num(img)
@@ -296,3 +292,116 @@ class Donuts(Dataset):
             img[img_yslice, img_xslice] += n_img[n_img_yslice, n_img_xslice]
 
         return img, fx, fy, px, py, intra, zernikes
+
+    def _apply_sky(
+        self, img: npt.NDArray[np.float64], seed: int
+    ) -> npt.NDArray[np.float64]:
+        """Add sky background to the image.
+
+        Parameters
+        ----------
+        img: np.ndarray
+            Image of the donuts.
+        seed: int
+            Random seed for selecting the sky level.
+
+        Returns
+        -------
+        np.ndarray
+            Image of the donuts plus the sky background.
+        """
+        # get the sky level
+        rng = np.random.default_rng(seed)
+        m_sky = rng.choice(self.sky)
+
+        # average of ITL + E2V sensors from O’Connor 2019
+        gain = (0.69 + 0.94) / 2
+
+        # from https://www.lsst.org/scientists/keynumbers
+        plate_scale = 0.2
+
+        # from https://smtn-002.lsst.io/
+        m_zero = 28.13
+
+        # exposure time, in seconds
+        t_exp = 15
+
+        # average of ITL + E2V sensors from O’Connor 2019
+        read_noise = (4.7 + 6.1) / 2
+
+        # generate noise using GalSim
+        sky_level = (
+            (t_exp / gain) * 10 ** ((m_zero - m_sky) / 2.5) * plate_scale ** 2
+        )
+        noise = galsim.CCDNoise(
+            galsim.BaseDeviate(seed),
+            sky_level=sky_level,
+            gain=gain,
+            read_noise=read_noise,
+        )
+        galsim_img = galsim.Image(img)
+        galsim_img.addNoise(noise)
+
+        return galsim_img.array
+
+    def _apply_dither(
+        self, img: npt.NDArray[np.float64], seed: int
+    ) -> npt.NDArray[np.float64]:
+        """Dither the image to simulate miscentering.
+
+        Parameters
+        ----------
+        img: np.ndarray
+            Image of the donuts.
+        seed: int
+            Random seed for selecting the dither.
+
+        Returns
+        -------
+        np.ndarray
+            Image of the donuts plus the sky background.
+        """
+        rng = np.random.default_rng(seed)
+
+        # randomly determine dither, [-5, 5] in each dimension
+        dx, dy = rng.integers(-5, 6, size=2)
+
+        # apply dither
+        img = np.roll(np.roll(img, dx, 1), dy, 0)
+
+        return img
+
+    def _apply_badpix(
+        self, img: npt.NDArray[np.float64], seed: int
+    ) -> npt.NDArray[np.float64]:
+        """Add bad pixels and columns to the image.
+
+        Parameters
+        ----------
+        img: np.ndarray
+            Image of the donuts.
+        seed: int
+            Random seed for selecting the bad pixels.
+
+        Returns
+        -------
+        np.ndarray
+            Image of the donuts including bad pixels.
+        """
+        return_img = img.copy()
+
+        # select the bad pixels (~2 per image)
+        rng = np.random.default_rng(seed)
+        nbadpix = round(rng.exponential(scale=2))
+        x, y = rng.choice(256, nbadpix), rng.choice(256, nbadpix)
+        return_img[x, y] = 0
+
+        # select the bad columns (~1 per image)
+        nbadcol = round(rng.exponential(scale=1))
+        badcols = rng.choice(256, nbadcol, replace=False)
+        for col in badcols:
+            start = rng.integers(256)
+            end = rng.integers(start + 1, 256)
+            return_img[start:end, col] = 0
+
+        return return_img
