@@ -114,10 +114,10 @@ class Donuts(Dataset):
         idx = self.index[index]
         if idx < self.N_UNBLENDED:
             blend_flag = False
-            img, fx, fy, fcl, zernikes = self._get_unblended(idx)
+            img, fx, fy, intra, zernikes = self._get_unblended(idx)
         else:
             blend_flag = True
-            img, fx, fy, fcl, zernikes = self._get_blended(
+            img, fx, fy, intra, zernikes = self._get_blended(
                 idx - self.N_UNBLENDED
             )
 
@@ -135,7 +135,7 @@ class Donuts(Dataset):
             "image": torch.from_numpy(img).reshape(1, 256, 256),
             "field_x": torch.FloatTensor([fx]),
             "field_y": torch.FloatTensor([fy]),
-            "intrafocal": torch.FloatTensor([fx]),
+            "intrafocal": torch.FloatTensor([intra]),
             "zernikes": torch.from_numpy(zernikes),
             "blended": torch.ByteTensor([blend_flag]),
         }
