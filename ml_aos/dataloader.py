@@ -17,9 +17,9 @@ class Donuts(Dataset):
     # location of the simulations on epyc
     DATA_DIR = "/epyc/users/jfc20/thomas_aos_sims/"
 
-    # number of blended and unblended simulations
-    N_UNBLENDED = 500_000
-    N_BLENDED = 100_404
+    # number of blended and unblended simulations in the full set
+    _N_UNBLENDED = 500_000
+    _N_BLENDED = 100_404
 
     # properties of the telescope
     PLATE_SCALE = 1 / 5  # arcsecs / micron
@@ -80,13 +80,13 @@ class Donuts(Dataset):
         # determine the indices of the val and test sets
         rng = np.random.default_rng(seed)
         holdout = rng.choice(
-            self.N_UNBLENDED + self.N_BLENDED, nval + ntest, replace=False
+            self._N_UNBLENDED + self._N_BLENDED, nval + ntest, replace=False
         )
 
         # get the indices corresponding to the requested mode
         self.mode = mode
         if mode == "train":
-            all_index = np.arange(Donuts.N_UNBLENDED + Donuts.N_BLENDED)
+            all_index = np.arange(self._N_UNBLENDED + self._N_BLENDED)
             train_index = set(all_index) - set(holdout)
             index = np.array(list(train_index))  # type: npt.NDArray[np.int64]
         elif mode == "val":
@@ -94,15 +94,25 @@ class Donuts(Dataset):
         else:
             index = holdout[nval:]
 
-        # load metadata for the unblended images
-        unblended_df = pd.read_csv(self.DATA_DIR + "unblended/record.csv")
-        unblended_df = unblended_df.iloc[index[index < self.N_UNBLENDED]]
-        self.unblended_df = unblended_df.reset_index(drop=True)
+        # get the unblended images in this set
+        unblended_idx = index[index < self._N_UNBLENDED]
+        self.N_unblended = len(unblended_idx)
+
+        # get the blended images in this set
+        blended_idx = index[index >= self._N_UNBLENDED] - self._N_UNBLENDED
+        self.N_blended = len(blended_idx)
 
         # load metadata for the unblended images
+        unblended_df = pd.read_csv(self.DATA_DIR + "unblended/record.csv")
+        unblended_df = unblended_df[np.isin(unblended_df.idx, unblended_idx)]
+        self.unblended_df = unblended_df.reset_index(drop=True)
+
+        # load metadata for the blended images
         blended_df = pd.read_csv(self.DATA_DIR + "blended/record.csv")
-        blended_df = blended_df.set_index(blended_df["idx"] + self.N_UNBLENDED)
-        self.blended_df = blended_df.loc[index[index >= self.N_UNBLENDED]]
+        blended_df = blended_df[np.isin(blended_df.idx, blended_idx)]
+        self.blended_df = blended_df.set_index(
+            blended_df.groupby("idx").ngroup() + self.N_unblended
+        )
 
         # load the sky simulations
         self.sky = np.loadtxt(self.DATA_DIR + "sky.csv")
@@ -135,7 +145,7 @@ class Donuts(Dataset):
             raise ValueError("idx out of bounds.")
 
         # get the simulations for this index
-        if idx < self.N_UNBLENDED:
+        if idx < self.N_unblended:
             blend_flag = False
             img, fx, fy, px, py, intra, zernikes = self._get_unblended(idx)
         else:
@@ -203,11 +213,12 @@ class Donuts(Dataset):
         """
 
         if blend_idx is None:
-            img_file = self.DATA_DIR + f"unblended/{idx}.image"
-            zernike_file = self.DATA_DIR + f"unblended/{idx}.zernike"
-            metadata = self.unblended_df.iloc[idx]
+            file_idx = self.unblended_df.loc[idx].idx
+            img_file = self.DATA_DIR + f"unblended/{file_idx}.image"
+            zernike_file = self.DATA_DIR + f"unblended/{file_idx}.zernike"
+            metadata = self.unblended_df.loc[idx]
         else:
-            file_idx = idx - self.N_UNBLENDED
+            file_idx = self.blended_df.loc[idx].iloc[0].idx
             img_file = self.DATA_DIR + f"blended/{file_idx}_{blend_idx}.image"
             zernike_file = self.DATA_DIR + f"blended/{file_idx}_0.zernike"
             metadata = self.blended_df.loc[idx].iloc[blend_idx]
