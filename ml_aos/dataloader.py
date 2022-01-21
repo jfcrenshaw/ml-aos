@@ -35,7 +35,9 @@ class Donuts(Dataset):
         background: bool = True,
         badpix: bool = True,
         dither: bool = True,
+        max_blend: float = 0.50,
         mask_blends: bool = False,
+        center_brightest: bool = True,
         nval: int = 2 ** 16,
         ntest: int = 2 ** 16,
         seed: int = 0,
@@ -53,8 +55,14 @@ class Donuts(Dataset):
             Whether to simulate bad pixels and columns.
         dither: bool, default=True
             Whether to simulate mis-centering by a few pixels.
+        max_blend: float, default=0.50
+            Maximum fraction of the central star to be blended. For images
+            with many blends, only the first handful of stars will be drawn,
+            stopping when the next star would pass this blend threshold.
         mask_blends: bool, default=False
             Whether to mask the blends.
+        center_brightest: bool, default=True
+            Whether to center the brightest star in blended images.
         nval: int, default=256
             Number of donuts in the validation set.
         ntest: int, default=2048
@@ -74,7 +82,9 @@ class Donuts(Dataset):
             "background": background,
             "badpix": badpix,
             "dither": dither,
+            "max_blend": max_blend,
             "mask_blends": mask_blends,
+            "center_brightest": center_brightest,
         }
 
         # determine the indices of the val and test sets
@@ -138,19 +148,22 @@ class Donuts(Dataset):
                 field_x, field_y: the field location in radians
                 focal_x, focal_y: the focal plane position in radians
                 intrafocal: boolean flag. 0 = extrafocal, 1 = intrafocal
-                blended: boolean flag. 0 = unblended, 1 = blended
                 zernikes: Noll zernikes coefficients 4-21, inclusive
+                n_blends: the number of blending stars in the image
+                fraction_blended: fraction of the central donut blended
         """
         if idx < 0 or idx > len(self):
             raise ValueError("idx out of bounds.")
 
         # get the simulations for this index
         if idx < self.N_unblended:
-            blend_flag = False
             img, fx, fy, px, py, intra, zernikes = self._get_unblended(idx)
+            nb = 0  # n_blends=0
+            fb = 0.0  # fraction_blended=0
         else:
-            blend_flag = True
-            img, fx, fy, px, py, intra, zernikes = self._get_blended(idx)
+            img, fx, fy, px, py, intra, zernikes, nb, fb = self._get_blended(
+                idx
+            )
 
         # apply image distortions
         settings = self.settings
@@ -169,8 +182,9 @@ class Donuts(Dataset):
             "focal_x": torch.FloatTensor([px]),
             "focal_y": torch.FloatTensor([py]),
             "intrafocal": torch.FloatTensor([intra]),
-            "blended": torch.ByteTensor([blend_flag]),
             "zernikes": torch.from_numpy(zernikes),
+            "n_blends": torch.ByteTensor([nb]),
+            "fraction_blended": torch.FloatTensor([fb]),
         }
 
         return output
@@ -252,6 +266,8 @@ class Donuts(Dataset):
         np.float64,
         bool,
         npt.NDArray[np.float64],
+        int,
+        float,
     ]:
         """Return a blended simulation.
 
@@ -273,22 +289,41 @@ class Donuts(Dataset):
             True = intrafocal, False = extrafocal
         zernikes: np.ndarray, shape=(18,)
             Noll zernikes coefficients 4-21, inclusive
+        n_blends: int
+            The number of blending stars in this image
+        fraction_blended: float
+            The fraction of the central donut that is blended
         """
+
+        # get the list of all neighbors
+        neighborhood = self.blended_df.loc[idx]
+        neighbors = neighborhood.neighborId.tolist()
+
+        # determine the central star
+        if self.settings["center_brightest"]:
+            center_idx = neighbors.pop(neighborhood.intensity.argmax())
+        else:
+            center_idx = neighbors.pop(0)
+
         # get the central star
         img, fx, fy, px, py, intra, zernikes = self._get_unblended(
-            idx, blend_idx=0
+            idx, blend_idx=center_idx
         )
 
-        # now loop over the neighbors
-        neighbors = self.blended_df.loc[idx].neighborId[1:]
+        # get a mask of the central star to determine fraction blended
+        mask_cut = 10
+        central_mask = np.where(img > mask_cut, True, False)
+
+        # keep track of blending stats
+        n_blends = 0
+        fraction_blended = 0.0
+
+        # now loop over the other neighbors
+        neighbor_mask = np.zeros_like(img)
         for n in neighbors:
+
             # get the neighbor, unblended
             n_img, _, _, n_px, n_py, *_ = self._get_unblended(idx, blend_idx=n)
-
-            # if we're masking the blends, set all positive pixels to NaN
-            # later we will cast all NaNs to zero
-            if self.settings["mask_blends"]:
-                n_img = np.where(n_img > 10, np.nan, n_img)
 
             # get distance in pixels
             dx = round((px - n_px) * self.PIXELS_PER_RADIAN)
@@ -300,9 +335,34 @@ class Donuts(Dataset):
             n_img_xslice = slice(max(0, -dx), min(256, 256 - dx))
             n_img_yslice = slice(max(0, -dy), min(256, 256 - dy))
 
-            img[img_yslice, img_xslice] += n_img[n_img_yslice, n_img_xslice]
+            # shift the neighbor image
+            sn_img = np.zeros_like(n_img)
+            sn_img[img_yslice, img_xslice] += n_img[n_img_yslice, n_img_xslice]
 
-        return img, fx, fy, px, py, intra, zernikes
+            # get the mask for this neighbor
+            n_mask = np.where(sn_img > mask_cut, True, False)
+            _neighbor_mask = neighbor_mask + n_mask
+
+            # calculate the fraction blended
+            _fraction_blended = _neighbor_mask[central_mask].mean()
+
+            # if the new fraction blended is too high, don't add more stars!
+            if _fraction_blended > self.settings["max_blend"]:
+                break
+
+            # otherwise, update blending stats, and add new blending star
+            n_blends += 1
+            fraction_blended = _fraction_blended
+            img += sn_img
+            neighbor_mask = _neighbor_mask
+
+        # if masking blends, set blending stars to NaN. We will cast NaNs
+        # to zero at the end. We do this so that if you add sky background,
+        # you don't have sky background in the masked regions.
+        if self.settings["mask_blends"]:
+            img += np.where(neighbor_mask, np.nan, 0)
+
+        return img, fx, fy, px, py, intra, zernikes, n_blends, fraction_blended
 
     def _apply_sky(
         self, img: npt.NDArray[np.float64], seed: int
