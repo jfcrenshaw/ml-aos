@@ -34,7 +34,7 @@ class Donuts(Dataset):
         mode: str = "train",
         background: bool = True,
         badpix: bool = True,
-        dither: bool = True,
+        dither: int = 5,
         max_blend: float = 0.50,
         mask_blends: bool = False,
         center_brightest: bool = True,
@@ -53,8 +53,9 @@ class Donuts(Dataset):
             Whether to add the sky background to the donut images.
         badpix: bool, default=True
             Whether to simulate bad pixels and columns.
-        dither: bool, default=True
-            Whether to simulate mis-centering by a few pixels.
+        dither: int, default=5
+            Maximum number of pixels to dither in both directions.
+            This simulates mis-centering.
         max_blend: float, default=0.50
             Maximum fraction of the central star to be blended. For images
             with many blends, only the first handful of stars will be drawn,
@@ -165,10 +166,9 @@ class Donuts(Dataset):
                 idx
             )
 
-        # apply image distortions
+        # sky background and bad pixels (if requested)
         settings = self.settings
         img = self._apply_sky(img, seed=idx) if settings["background"] else img
-        img = self._apply_dither(img, seed=idx) if settings["dither"] else img
         img = self._apply_badpix(img, seed=idx) if settings["badpix"] else img
 
         # cast NaNs to zero
@@ -225,7 +225,6 @@ class Donuts(Dataset):
         zernikes: np.ndarray, shape=(18,)
             Noll zernikes coefficients 4-21, inclusive
         """
-
         if blend_idx is None:
             file_idx = self.unblended_df.loc[idx].idx
             img_file = self.DATA_DIR + f"unblended/{file_idx}.image"
@@ -238,7 +237,23 @@ class Donuts(Dataset):
             metadata = self.blended_df.loc[idx].iloc[blend_idx]
 
         # load the image array
-        img = np.load(img_file)
+        img0 = np.load(img_file)
+
+        # apply dither
+        # randomly select dither size
+        rng = np.random.default_rng(seed=idx)
+        dither = self.settings["dither"]
+        dx, dy = rng.integers(-dither, dither + 1, size=2)
+        # select the appropriate slices of the central postage stamp and
+        # the dithered postage stamp
+        img_xslice = slice(max(0, dx), min(256, 256 + dx))
+        img_yslice = slice(max(0, dy), min(256, 256 + dy))
+        img0_xslice = slice(max(0, -dx), min(256, 256 - dx))
+        img0_yslice = slice(max(0, -dy), min(256, 256 - dy))
+        # create the central postage stamp of zeros
+        img = np.zeros_like(img0)
+        # and set the relevant section to the dithered image
+        img[img_yslice, img_xslice] = img0[img0_yslice, img0_xslice]
 
         # load the field position, in radians
         fx, fy = metadata.fieldx, metadata.fieldy
@@ -344,7 +359,10 @@ class Donuts(Dataset):
             _neighbor_mask = neighbor_mask + n_mask
 
             # calculate the fraction blended
-            _fraction_blended = _neighbor_mask[central_mask].mean()
+            central_overlap = _neighbor_mask[central_mask]
+            _fraction_blended = (
+                np.count_nonzero(central_overlap) / central_overlap.size
+            )
 
             # if the new fraction blended is too high, don't add more stars!
             if _fraction_blended > self.settings["max_blend"]:
