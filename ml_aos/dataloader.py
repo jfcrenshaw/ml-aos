@@ -130,7 +130,7 @@ class Donuts(Dataset):
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
-        return len(self.unblended_df) + len(self.blended_df)
+        return len(self.unblended_df) + len(set(self.blended_df.idx))
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         """Return simulation corresponding to the index.
@@ -145,7 +145,7 @@ class Donuts(Dataset):
         -------
         dict
             The dictionary contains the following pytorch tensors
-                image: cenered donut image, shape=(256, 256)
+                image: donut image, shape=(256, 256)
                 field_x, field_y: the field location in radians
                 focal_x, focal_y: the focal plane position in radians
                 intrafocal: boolean flag. 0 = extrafocal, 1 = intrafocal
@@ -174,15 +174,18 @@ class Donuts(Dataset):
         # cast NaNs to zero
         img = np.nan_to_num(img)
 
+        # reshape the images so they have a channel index
+        img = img.reshape(1, 256, 256)
+
         # convert outputs to torch tensors and return in a dictionary
         output = {
-            "image": torch.from_numpy(img).reshape(1, 256, 256),
+            "image": torch.from_numpy(img).float(),
             "field_x": torch.FloatTensor([fx]),
             "field_y": torch.FloatTensor([fy]),
             "focal_x": torch.FloatTensor([px]),
             "focal_y": torch.FloatTensor([py]),
             "intrafocal": torch.FloatTensor([intra]),
-            "zernikes": torch.from_numpy(zernikes),
+            "zernikes": torch.from_numpy(zernikes).float(),
             "n_blends": torch.ByteTensor([nb]),
             "fraction_blended": torch.FloatTensor([fb]),
         }
@@ -344,6 +347,11 @@ class Donuts(Dataset):
             dx = round((px - n_px) * self.PIXELS_PER_RADIAN)
             dy = round((py - n_py) * self.PIXELS_PER_RADIAN)
 
+            # if we are centering the brightest star, blending stars might
+            # be out of frame. We can skip these.
+            if abs(dx) > 250 or abs(dy) > 250:
+                continue
+
             # get slices of central and neighbor images
             img_xslice = slice(max(0, dx), min(256, 256 + dx))
             img_yslice = slice(max(0, dy), min(256, 256 + dy))
@@ -352,7 +360,7 @@ class Donuts(Dataset):
 
             # shift the neighbor image
             sn_img = np.zeros_like(n_img)
-            sn_img[img_yslice, img_xslice] += n_img[n_img_yslice, n_img_xslice]
+            sn_img[img_yslice, img_xslice] = n_img[n_img_yslice, n_img_xslice]
 
             # get the mask for this neighbor
             n_mask = np.where(sn_img > mask_cut, True, False)
@@ -364,9 +372,9 @@ class Donuts(Dataset):
                 np.count_nonzero(central_overlap) / central_overlap.size
             )
 
-            # if the new fraction blended is too high, don't add more stars!
+            # if the new fraction blended is too high, skip this star
             if _fraction_blended > self.settings["max_blend"]:
-                break
+                continue
 
             # otherwise, update blending stats, and add new blending star
             n_blends += 1
@@ -489,7 +497,7 @@ class Donuts(Dataset):
         nbadcol = round(rng.exponential(scale=1))
         badcols = rng.choice(256, nbadcol, replace=False)
         for col in badcols:
-            start = rng.integers(256)
+            start = rng.integers(250)
             end = rng.integers(start + 1, 256)
             return_img[start:end, col] = 0
 
