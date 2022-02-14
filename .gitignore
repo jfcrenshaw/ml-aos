@@ -127,3 +127,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# nohup files
+*nohup.out
+
+# checkpoint files
+*.ckpt
