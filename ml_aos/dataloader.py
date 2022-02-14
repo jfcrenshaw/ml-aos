@@ -40,7 +40,7 @@ class Donuts(Dataset):
         center_brightest: bool = True,
         nval: int = 2 ** 16,
         ntest: int = 2 ** 16,
-        seed: int = 0,
+        split_seed: int = 0,
     ):
         """Load the simulated AOS donuts and zernikes in a Pytorch Dataset.
 
@@ -68,7 +68,7 @@ class Donuts(Dataset):
             Number of donuts in the validation set.
         ntest: int, default=2048
             Number of donuts in the test set
-        seed: int, default=0
+        split_seed: int, default=0
             Random seed for training set/test set/validation set selection.
         """
         # check that the mode is valid
@@ -89,7 +89,7 @@ class Donuts(Dataset):
         }
 
         # determine the indices of the val and test sets
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(split_seed)
         holdout = rng.choice(
             self._N_UNBLENDED + self._N_BLENDED, nval + ntest, replace=False
         )
@@ -244,9 +244,8 @@ class Donuts(Dataset):
 
         # apply dither
         # randomly select dither size
-        rng = np.random.default_rng(seed=idx)
         dither = self.settings["dither"]
-        dx, dy = rng.integers(-dither, dither + 1, size=2)
+        dx, dy = np.random.randint(-dither, dither + 1, size=2)
         # select the appropriate slices of the central postage stamp and
         # the dithered postage stamp
         img_xslice = slice(max(0, dx), min(256, 256 + dx))
@@ -408,8 +407,7 @@ class Donuts(Dataset):
             Image of the donuts plus the sky background.
         """
         # get the sky level
-        rng = np.random.default_rng(seed)
-        m_sky = rng.choice(self.sky)
+        m_sky = np.random.choice(self.sky)
 
         # average of ITL + E2V sensors from O’Connor 2019
         gain = (0.69 + 0.94) / 2
@@ -431,7 +429,7 @@ class Donuts(Dataset):
             (t_exp / gain) * 10 ** ((m_zero - m_sky) / 2.5) * plate_scale ** 2
         )
         noise = galsim.CCDNoise(
-            galsim.BaseDeviate(seed),
+            galsim.BaseDeviate(np.random.randint(2 ** 16)),
             sky_level=sky_level,
             gain=gain,
             read_noise=read_noise,
@@ -458,10 +456,9 @@ class Donuts(Dataset):
         np.ndarray
             Image of the donuts plus the sky background.
         """
-        rng = np.random.default_rng(seed)
 
         # randomly determine dither, [-5, 5] in each dimension
-        dx, dy = rng.integers(-5, 6, size=2)
+        dx, dy = np.random.randint(-5, 6, size=2)
 
         # apply dither
         img = np.roll(np.roll(img, dx, 1), dy, 0)
@@ -488,17 +485,16 @@ class Donuts(Dataset):
         return_img = img.copy()
 
         # select the bad pixels (~2 per image)
-        rng = np.random.default_rng(seed)
-        nbadpix = round(rng.exponential(scale=2))
-        x, y = rng.choice(256, nbadpix), rng.choice(256, nbadpix)
+        nbadpix = round(np.random.exponential(scale=2))
+        x, y = np.random.choice(256, nbadpix), np.random.choice(256, nbadpix)
         return_img[x, y] = 0
 
         # select the bad columns (~1 per image)
-        nbadcol = round(rng.exponential(scale=1))
-        badcols = rng.choice(256, nbadcol, replace=False)
+        nbadcol = round(np.random.exponential(scale=1))
+        badcols = np.random.choice(256, nbadcol, replace=False)
         for col in badcols:
-            start = rng.integers(250)
-            end = rng.integers(start + 1, 256)
+            start = np.random.randint(250)
+            end = np.random.randint(start + 1, 256)
             return_img[start:end, col] = 0
 
         return return_img

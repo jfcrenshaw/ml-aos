@@ -8,7 +8,7 @@ import torch
 from torch import nn
 
 
-class WaveNet(nn.Module):
+class DavidNet(nn.Module):
     """Network to predict wavefront Zernike coefficients from donut images.
 
     Consists of a DonutNet that creates image features from the donut image.
