@@ -21,6 +21,10 @@ class Donuts(Dataset):
     _N_UNBLENDED = 500_000
     _N_BLENDED = 100_404
 
+    # estimated mean and std of pixel values for individual donuts
+    PIXEL_MEAN = 30.31
+    PIXEL_STD = 87.66
+
     # properties of the telescope
     PLATE_SCALE = 1 / 5  # arcsecs / micron
     PIXEL_SIZE = 10  # microns
@@ -38,6 +42,8 @@ class Donuts(Dataset):
         max_blend: float = 0.50,
         mask_blends: bool = False,
         center_brightest: bool = True,
+        normalize_pixels: bool = True,
+        convert_zernikes: bool = True,
         nval: int = 2 ** 16,
         ntest: int = 2 ** 16,
         split_seed: int = 0,
@@ -64,6 +70,12 @@ class Donuts(Dataset):
             Whether to mask the blends.
         center_brightest: bool, default=True
             Whether to center the brightest star in blended images.
+        normalize_pixels: bool, default=True
+            Whether to normalize the pixel values using the mean and std
+            of the single-donut pixels.
+        convert_zernikes: bool, default=True
+            Whether to convert Zernike coefficients from units of r band
+            wavelength to quadrature contribution to PSF FWHM.
         nval: int, default=256
             Number of donuts in the validation set.
         ntest: int, default=2048
@@ -86,6 +98,8 @@ class Donuts(Dataset):
             "max_blend": max_blend,
             "mask_blends": mask_blends,
             "center_brightest": center_brightest,
+            "normalize_pixels": normalize_pixels,
+            "convert_zernikes": convert_zernikes,
         }
 
         # determine the indices of the val and test sets
@@ -176,6 +190,14 @@ class Donuts(Dataset):
 
         # reshape the images so they have a channel index
         img = img.reshape(1, 256, 256)
+
+        # normalize the pixel values using the pixel mean and pixel std
+        if self.settings["normalize_pixels"]:
+            img = (img - self.PIXEL_MEAN) / self.PIXEL_STD
+
+        # convert zernikes to their contribution to FWHM
+        if self.settings["convert_zernikes"]:
+            zernikes = self._convert_zernikes(zernikes)
 
         # convert outputs to torch tensors and return in a dictionary
         output = {
@@ -498,3 +520,51 @@ class Donuts(Dataset):
             return_img[start:end, col] = 0
 
         return return_img
+
+    def _convert_zernikes(
+        self, zernikes: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """Convert zernike units from r-band wavelength to quadrature
+        contribution to FWHM.
+
+        Parameters
+        ----------
+        zernikes: np.ndarray
+            Array of zernike coefficients in units of r-band wavelength
+
+        Returns
+        -------
+        np.ndarray
+            Array of zernike coefficients in units of quadrature contribution
+            to FWHM
+        """
+
+        rband_eff_wave = 0.6173  # microns
+
+        # these conversion factors depend on telescope radius and obscuration
+        # the numbers below are for the Rubin telescope; different numbers
+        # are needed for Auxtel. Source: Josh Meyers
+        arcsec_per_micron = np.array(
+            [
+                1.062,  # Z4
+                0.384,  # Z5
+                0.384,  # Z6
+                1.159,  # Z7
+                1.159,  # Z8
+                0.560,  # Z9
+                0.560,  # Z10
+                2.375,  # Z11
+                1.325,  # Z12
+                1.325,  # Z13
+                0.730,  # Z14
+                0.730,  # Z15
+                2.482,  # Z16
+                2.482,  # Z17
+                1.541,  # Z18
+                1.541,  # Z19
+                0.898,  # Z20
+                0.898,  # Z21
+            ],
+        )
+
+        return zernikes * rband_eff_wave * arcsec_per_micron
