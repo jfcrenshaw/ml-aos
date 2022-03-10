@@ -133,3 +133,9 @@ dmypy.json
 
 # checkpoint files
 *.ckpt
+
+# wandb files
+experiments/wandb
+
+# vscode settings
+.vscode
