@@ -15,9 +15,6 @@ from torch.utils.data import Dataset
 class Donuts(Dataset):
     """Data set of AOS donuts and zernikes."""
 
-    # location of the simulations on epyc
-    DATA_DIR = "/epyc/users/jfc20/thomas_aos_sims/"
-
     # number of blended and unblended simulations in the full set
     _N_UNBLENDED = 500_000
     _N_BLENDED = 100_404
@@ -48,6 +45,7 @@ class Donuts(Dataset):
         nval: int = 2 ** 16,
         ntest: int = 2 ** 16,
         split_seed: int = 0,
+        data_dir: str = "/epyc/users/jfc20/thomas_aos_sims/",
     ):
         """Load the simulated AOS donuts and zernikes in a Pytorch Dataset.
 
@@ -83,6 +81,9 @@ class Donuts(Dataset):
             Number of donuts in the test set
         split_seed: int, default=0
             Random seed for training set/test set/validation set selection.
+        data_dir: str, default=/epyc/users/jfc20/thomas_aos_sims/
+            Location of the data directory. The default location is where
+            I stored the simulations on epyc.
         """
         # check that the mode is valid
         allowed_modes = ["train", "val", "test"]
@@ -90,6 +91,9 @@ class Donuts(Dataset):
             raise ValueError(
                 f"mode must be one of {', '.join(allowed_modes)}."
             )
+
+        # save the data directory
+        self.DATA_DIR = data_dir
 
         # set the image properties
         self.settings = {
