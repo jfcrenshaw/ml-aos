@@ -8,6 +8,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import torch
+from scipy import ndimage
 from torch.utils.data import Dataset
 
 
@@ -40,10 +41,10 @@ class Donuts(Dataset):
         badpix: bool = True,
         dither: int = 5,
         max_blend: float = 0.50,
-        mask_blends: bool = False,
         center_brightest: bool = True,
         normalize_pixels: bool = True,
         convert_zernikes: bool = True,
+        mask_buffer: int = 0,
         nval: int = 2 ** 16,
         ntest: int = 2 ** 16,
         split_seed: int = 0,
@@ -66,8 +67,6 @@ class Donuts(Dataset):
             Maximum fraction of the central star to be blended. For images
             with many blends, only the first handful of stars will be drawn,
             stopping when the next star would pass this blend threshold.
-        mask_blends: bool, default=False
-            Whether to mask the blends.
         center_brightest: bool, default=True
             Whether to center the brightest star in blended images.
         normalize_pixels: bool, default=True
@@ -76,6 +75,8 @@ class Donuts(Dataset):
         convert_zernikes: bool, default=True
             Whether to convert Zernike coefficients from units of r band
             wavelength to quadrature contribution to PSF FWHM.
+        mask_buffer: int, default=0
+            The number of buffer pixels to add to outside of masks.
         nval: int, default=256
             Number of donuts in the validation set.
         ntest: int, default=2048
@@ -96,10 +97,10 @@ class Donuts(Dataset):
             "badpix": badpix,
             "dither": dither,
             "max_blend": max_blend,
-            "mask_blends": mask_blends,
             "center_brightest": center_brightest,
             "normalize_pixels": normalize_pixels,
             "convert_zernikes": convert_zernikes,
+            "mask_buffer": mask_buffer,
         }
 
         # determine the indices of the val and test sets
@@ -160,6 +161,7 @@ class Donuts(Dataset):
         dict
             The dictionary contains the following pytorch tensors
                 image: donut image, shape=(256, 256)
+                mask: donut mask, shape=(256, 256)
                 field_x, field_y: the field location in radians
                 focal_x, focal_y: the focal plane position in radians
                 intrafocal: boolean flag. 0 = extrafocal, 1 = intrafocal
@@ -170,23 +172,36 @@ class Donuts(Dataset):
         if idx < 0 or idx > len(self):
             raise ValueError("idx out of bounds.")
 
+        # determine the amount of dithering
+        dither = self.settings["dither"]  # max size of dither
+        dx, dy = np.random.randint(-dither, dither + 1, size=2)
+
         # get the simulations for this index
         if idx < self.N_unblended:
-            img, fx, fy, px, py, intra, zernikes = self._get_unblended(idx)
+            img, mask, fx, fy, px, py, intra, zernikes = self._get_unblended(
+                idx, dx, dy
+            )
             nb = 0  # n_blends=0
             fb = 0.0  # fraction_blended=0
         else:
-            img, fx, fy, px, py, intra, zernikes, nb, fb = self._get_blended(
-                idx
-            )
+            (
+                img,
+                mask,
+                fx,
+                fy,
+                px,
+                py,
+                intra,
+                zernikes,
+                nb,
+                fb,
+            ) = self._get_blended(idx, dx, dy)
 
         # sky background and bad pixels (if requested)
         settings = self.settings
         img = self._apply_sky(img, seed=idx) if settings["background"] else img
-        img = self._apply_badpix(img, seed=idx) if settings["badpix"] else img
-
-        # cast NaNs to zero
-        img = np.nan_to_num(img)
+        if settings["badpix"]:
+            self._apply_badpix(img, mask, seed=idx)
 
         # reshape the images so they have a channel index
         img = img.reshape(1, 256, 256)
@@ -202,6 +217,7 @@ class Donuts(Dataset):
         # convert outputs to torch tensors and return in a dictionary
         output = {
             "image": torch.from_numpy(img).float(),
+            "mask": torch.from_numpy(mask).bool(),
             "field_x": torch.FloatTensor([fx]),
             "field_y": torch.FloatTensor([fy]),
             "focal_x": torch.FloatTensor([px]),
@@ -217,8 +233,11 @@ class Donuts(Dataset):
     def _get_unblended(
         self,
         idx: int,
+        dx: int,
+        dy: int,
         blend_idx: int = None,
     ) -> tuple[
+        npt.NDArray[np.float64],
         npt.NDArray[np.float64],
         np.float64,
         np.float64,
@@ -234,6 +253,10 @@ class Donuts(Dataset):
         idx: int
             The index of the simulation. These refer to the pandas indices
             listed in self.unblended_df and self.blended_df.
+        dx: int
+            The amount to dither in the x direction
+        dy: int
+            The amount to dither in the y direction
         blend_idx: int, optional
             The neighborId lists in self.blended_df.
 
@@ -241,6 +264,8 @@ class Donuts(Dataset):
         -------
         img: np.ndarray, shape=(256, 256)
             centered donut image
+        mask: np.ndarray, shape=(256, 256)
+            boolean array masking out background
         fx, fy: float
             the field location in radians
         px, py: float
@@ -262,22 +287,13 @@ class Donuts(Dataset):
             metadata = self.blended_df.loc[idx].iloc[blend_idx]
 
         # load the image array
-        img0 = np.load(img_file)
+        img = np.load(img_file)
+
+        # create the donut mask
+        mask = self._get_mask(img)
 
         # apply dither
-        # randomly select dither size
-        dither = self.settings["dither"]
-        dx, dy = np.random.randint(-dither, dither + 1, size=2)
-        # select the appropriate slices of the central postage stamp and
-        # the dithered postage stamp
-        img_xslice = slice(max(0, dx), min(256, 256 + dx))
-        img_yslice = slice(max(0, dy), min(256, 256 + dy))
-        img0_xslice = slice(max(0, -dx), min(256, 256 - dx))
-        img0_yslice = slice(max(0, -dy), min(256, 256 - dy))
-        # create the central postage stamp of zeros
-        img = np.zeros_like(img0)
-        # and set the relevant section to the dithered image
-        img[img_yslice, img_xslice] = img0[img0_yslice, img0_xslice]
+        img = self._dither_img(img, dx, dy)
 
         # load the field position, in radians
         fx, fy = metadata.fieldx, metadata.fieldy
@@ -286,18 +302,21 @@ class Donuts(Dataset):
         px, py = metadata.posx, metadata.posy
 
         # boolean stating whether the image is intrafocal
-        # obviously, if false, the image is extrafocal
+        # if false, the image is extrafocal
         intra = "SW0" in metadata.chip
 
         # load the zernike coefficients; we use 4-21, inclusive
         zernikes = np.load(zernike_file)[4:22]
 
-        return img, fx, fy, px, py, intra, zernikes
+        return img, mask, fx, fy, px, py, intra, zernikes
 
     def _get_blended(
         self,
         idx: int,
+        dx: int,
+        dy: int,
     ) -> tuple[
+        npt.NDArray[np.float64],
         npt.NDArray[np.float64],
         np.float64,
         np.float64,
@@ -315,11 +334,17 @@ class Donuts(Dataset):
         idx: int
             The index of the simulation. These refer to the pandas indices
             listed in self.blended_df.
+        dx: int
+            The amount to dither in the x direction
+        dy: int
+            The amount to dither in the y direction
 
         Returns
         -------
         img: np.ndarray, shape=(256, 256)
             image of all blending donuts, centered on the primary donut
+        mask: np.ndarray, shape=(256, 256)
+            boolean array masking out background and blends
         fx, fy: float
             the field location of the primary donut in radians
         px, py: float
@@ -345,46 +370,47 @@ class Donuts(Dataset):
             center_idx = neighbors.pop(0)
 
         # get the central star
-        img, fx, fy, px, py, intra, zernikes = self._get_unblended(
-            idx, blend_idx=center_idx
-        )
-
-        # get a mask of the central star to determine fraction blended
-        mask_cut = 10
-        central_mask = np.where(img > mask_cut, True, False)
+        (
+            img,
+            central_mask,
+            fx,
+            fy,
+            px,
+            py,
+            intra,
+            zernikes,
+        ) = self._get_unblended(idx, dx, dy, blend_idx=center_idx)
 
         # keep track of blending stats
         n_blends = 0
         fraction_blended = 0.0
 
         # now loop over the other neighbors
-        neighbor_mask = np.zeros_like(img)
+        neighbor_mask = np.zeros_like(central_mask)
         for n in neighbors:
 
             # get the neighbor, unblended
-            n_img, _, _, n_px, n_py, *_ = self._get_unblended(idx, blend_idx=n)
+            n_img, n_mask, _, _, n_px, n_py, *_ = self._get_unblended(
+                idx, dx, dy, blend_idx=n
+            )
 
             # get distance in pixels
-            dx = round((px - n_px) * self.PIXELS_PER_RADIAN)
-            dy = round((py - n_py) * self.PIXELS_PER_RADIAN)
+            n_dx = round((px - n_px) * self.PIXELS_PER_RADIAN)
+            n_dy = round((py - n_py) * self.PIXELS_PER_RADIAN)
 
             # if we are centering the brightest star, blending stars might
             # be out of frame. We can skip these.
-            if abs(dx) > 250 or abs(dy) > 250:
+            if (
+                abs(n_dx) > 0.9 * n_img.shape[0]
+                or abs(n_dy) > 0.9 * n_img.shape[0]
+            ):
                 continue
 
-            # get slices of central and neighbor images
-            img_xslice = slice(max(0, dx), min(256, 256 + dx))
-            img_yslice = slice(max(0, dy), min(256, 256 + dy))
-            n_img_xslice = slice(max(0, -dx), min(256, 256 - dx))
-            n_img_yslice = slice(max(0, -dy), min(256, 256 - dy))
-
-            # shift the neighbor image
-            sn_img = np.zeros_like(n_img)
-            sn_img[img_yslice, img_xslice] = n_img[n_img_yslice, n_img_xslice]
+            # shift the image and mask
+            n_img = self._dither_img(n_img, n_dx, n_dy)
+            n_mask = self._dither_img(n_mask, n_dx, n_dy)
 
             # get the mask for this neighbor
-            n_mask = np.where(sn_img > mask_cut, True, False)
             _neighbor_mask = neighbor_mask + n_mask
 
             # calculate the fraction blended
@@ -400,16 +426,82 @@ class Donuts(Dataset):
             # otherwise, update blending stats, and add new blending star
             n_blends += 1
             fraction_blended = _fraction_blended
-            img += sn_img
+            img += n_img
             neighbor_mask = _neighbor_mask
 
-        # if masking blends, set blending stars to NaN. We will cast NaNs
-        # to zero at the end. We do this so that if you add sky background,
-        # you don't have sky background in the masked regions.
-        if self.settings["mask_blends"]:
-            img += np.where(neighbor_mask, np.nan, 0)
+        # remove blending regions from the central mask
+        mask = np.where(neighbor_mask, 0, central_mask)
 
-        return img, fx, fy, px, py, intra, zernikes, n_blends, fraction_blended
+        return (
+            img,
+            mask,
+            fx,
+            fy,
+            px,
+            py,
+            intra,
+            zernikes,
+            n_blends,
+            fraction_blended,
+        )
+
+    def _get_mask(
+        self,
+        img: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        """Return mask for central donut.
+
+        Parameters
+        ----------
+        img: np.ndarray
+            Image of the donut
+
+        Returns
+        -------
+        mask: np.ndarray
+            Binary array that masks out background
+        """
+        threshold = 20
+        mask = np.where(img > threshold, True, False)
+        if self.settings["mask_buffer"] > 0:
+            mask = ndimage.binary_dilation(
+                mask, iterations=self.settings["mask_buffer"]
+            )
+        return mask
+
+    @staticmethod
+    def _dither_img(
+        img0: npt.NDArray[np.float64], dx: int, dy: int
+    ) -> npt.NDArray[np.float64]:
+        """Dithers the image.
+
+        Parameters
+        ----------
+        img0: np.ndarray
+            Image to dither
+        dx: int
+            Number of pixels to shift in the x direction
+        dy: int
+            Number of pixels to shift in the y direction
+        """
+
+        xmax = img0.shape[1]
+        ymax = img0.shape[0]
+
+        # select the appropriate slices of the central postage stamp and
+        # the dithered postage stamp
+        img_xslice = slice(max(0, dx), min(xmax, xmax + dx))
+        img_yslice = slice(max(0, dy), min(ymax, ymax + dy))
+        img0_xslice = slice(max(0, -dx), min(xmax, xmax - dx))
+        img0_yslice = slice(max(0, -dy), min(ymax, ymax - dy))
+
+        # create the central postage stamp of zeros
+        img = np.zeros_like(img0)
+
+        # and set the relevant section to the dithered image
+        img[img_yslice, img_xslice] = img0[img0_yslice, img0_xslice]
+
+        return img
 
     def _apply_sky(
         self, img: npt.NDArray[np.float64], seed: int
@@ -461,65 +553,40 @@ class Donuts(Dataset):
 
         return galsim_img.array
 
-    def _apply_dither(
-        self, img: npt.NDArray[np.float64], seed: int
-    ) -> npt.NDArray[np.float64]:
-        """Dither the image to simulate miscentering.
-
-        Parameters
-        ----------
-        img: np.ndarray
-            Image of the donuts.
-        seed: int
-            Random seed for selecting the dither.
-
-        Returns
-        -------
-        np.ndarray
-            Image of the donuts plus the sky background.
-        """
-
-        # randomly determine dither, [-5, 5] in each dimension
-        dx, dy = np.random.randint(-5, 6, size=2)
-
-        # apply dither
-        img = np.roll(np.roll(img, dx, 1), dy, 0)
-
-        return img
-
     def _apply_badpix(
-        self, img: npt.NDArray[np.float64], seed: int
-    ) -> npt.NDArray[np.float64]:
-        """Add bad pixels and columns to the image.
+        self,
+        img: npt.NDArray[np.float64],
+        mask: npt.NDArray[np.float64],
+        seed: int,
+    ) -> None:
+        """Add bad pixels and columns to the image and mask.
 
         Parameters
         ----------
         img: np.ndarray
             Image of the donuts.
+        mask: np.ndarray
+            Mask for the donut.
         seed: int
             Random seed for selecting the bad pixels.
-
-        Returns
-        -------
-        np.ndarray
-            Image of the donuts including bad pixels.
         """
-        return_img = img.copy()
 
         # select the bad pixels (~2 per image)
         nbadpix = round(np.random.exponential(scale=2))
-        x, y = np.random.choice(256, nbadpix), np.random.choice(256, nbadpix)
-        return_img[x, y] = 0
+        x, y = np.random.choice(img.shape[1], nbadpix), np.random.choice(
+            img.shape[0], nbadpix
+        )
+        img[y, x] = 0
+        mask[y, x] = 0
 
         # select the bad columns (~1 per image)
         nbadcol = round(np.random.exponential(scale=1))
-        badcols = np.random.choice(256, nbadcol, replace=False)
+        badcols = np.random.choice(img.shape[1], nbadcol, replace=False)
         for col in badcols:
-            start = np.random.randint(250)
-            end = np.random.randint(start + 1, 256)
-            return_img[start:end, col] = 0
-
-        return return_img
+            start = np.random.randint(img.shape[0] - 10)
+            end = np.random.randint(start + 1, img.shape[0])
+            img[start:end, col] = 0
+            mask[start:end, col] = 0
 
     def _convert_zernikes(
         self, zernikes: npt.NDArray[np.float64]
