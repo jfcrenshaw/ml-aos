@@ -21,10 +21,10 @@ class DonutLoader(pl.LightningDataModule):
         badpix: bool = True,
         dither: int = 5,
         max_blend: float = 0.50,
-        mask_blends: bool = False,
         center_brightest: bool = True,
         normalize_pixels: bool = True,
         convert_zernikes: bool = True,
+        mask_buffer: int = 0,
         nval: int = 2 ** 16,
         ntest: int = 2 ** 16,
         split_seed: int = 0,
@@ -51,8 +51,6 @@ class DonutLoader(pl.LightningDataModule):
             Maximum fraction of the central star to be blended. For images
             with many blends, only the first handful of stars will be drawn,
             stopping when the next star would pass this blend threshold.
-        mask_blends: bool, default=False
-            Whether to mask the blends.
         center_brightest: bool, default=True
             Whether to center the brightest star in blended images.
         normalize_pixels: bool, default=True
@@ -61,6 +59,8 @@ class DonutLoader(pl.LightningDataModule):
         convert_zernikes: bool, default=True
             Whether to convert Zernike coefficients from units of r band
             wavelength to quadrature contribution to PSF FWHM.
+        mask_buffer: int, default=0
+            The number of buffer pixels to add to outside of masks.
         nval: int, default=256
             Number of donuts in the validation set.
         ntest: int, default=2048
@@ -88,10 +88,10 @@ class DonutLoader(pl.LightningDataModule):
                 badpix=self.hparams.badpix,
                 dither=self.hparams.dither,
                 max_blend=self.hparams.max_blend,
-                mask_blends=self.hparams.mask_blends,
                 center_brightest=self.hparams.center_brightest,
                 normalize_pixels=self.hparams.normalize_pixels,
                 convert_zernikes=self.hparams.convert_zernikes,
+                mask_buffer=self.hparams.mask_buffer,
                 nval=self.hparams.nval,
                 ntest=self.hparams.ntest,
                 split_seed=self.hparams.split_seed,
