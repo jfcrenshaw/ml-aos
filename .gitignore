@@ -139,3 +139,6 @@ experiments/wandb
 
 # vscode settings
 .vscode
+
+# the data directory
+data/
