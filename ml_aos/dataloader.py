@@ -3,6 +3,8 @@
 Based on code written by David Thomas for his PhD Thesis at Stanford.
 """
 
+from typing import Dict, Tuple
+
 import galsim
 import numpy as np
 import numpy.typing as npt
@@ -151,7 +153,7 @@ class Donuts(Dataset):
         """Return length of this Dataset."""
         return len(self.unblended_df) + len(set(self.blended_df.idx))
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Return simulation corresponding to the index.
 
         Parameters
@@ -240,7 +242,7 @@ class Donuts(Dataset):
         dx: int,
         dy: int,
         blend_idx: int = None,
-    ) -> tuple[
+    ) -> Tuple[
         npt.NDArray[np.float64],
         npt.NDArray[np.float64],
         np.float64,
@@ -319,7 +321,7 @@ class Donuts(Dataset):
         idx: int,
         dx: int,
         dy: int,
-    ) -> tuple[
+    ) -> Tuple[
         npt.NDArray[np.float64],
         npt.NDArray[np.float64],
         np.float64,
@@ -465,7 +467,7 @@ class Donuts(Dataset):
         mask: np.ndarray
             Binary array that masks out background
         """
-        threshold = 20
+        threshold = 10
         mask = np.where(img > threshold, True, False)
         if self.settings["mask_buffer"] > 0:
             mask = ndimage.binary_dilation(

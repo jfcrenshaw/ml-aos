@@ -1,6 +1,6 @@
 """Wrapping everything for DavidNet in Pytorch Lightning."""
 
-from typing import Tuple
+from typing import Dict, Tuple
 
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
@@ -32,6 +32,7 @@ class DonutLoader(pl.LightningDataModule):
         num_workers: int = 16,
         persistent_workers: bool = True,
         pin_memory: bool = True,
+        data_dir: str = "/epyc/users/jfc20/thomas_aos_sims/",
     ) -> None:
         """Load the simulated Donuts data.
 
@@ -76,6 +77,9 @@ class DonutLoader(pl.LightningDataModule):
         pin_memory: bool, default=True
             Whether to automatically put data in pinned memory (recommended
             whenever using a GPU).
+        data_dir: str, default=/epyc/users/jfc20/thomas_aos_sims/
+            Location of the data directory. The default location is where
+            I stored the simulations on epyc.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -95,6 +99,7 @@ class DonutLoader(pl.LightningDataModule):
                 nval=self.hparams.nval,
                 ntest=self.hparams.ntest,
                 split_seed=self.hparams.split_seed,
+                data_dir=self.hparams.data_dir,
             ),
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
@@ -137,7 +142,7 @@ class DavidNet(TorchDavidNet, pl.LightningModule):
         self.save_hyperparameters()
 
     def _predict(
-        self, batch: dict[str, torch.Tensor]
+        self, batch: Dict[str, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Make predictions for a batch of donuts."""
         # unpack the data
@@ -153,7 +158,7 @@ class DavidNet(TorchDavidNet, pl.LightningModule):
         return z_pred, z_true
 
     def training_step(
-        self, batch: dict[str, torch.Tensor], batch_idx: int
+        self, batch: Dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
         """Calculate the loss of the training step."""
         # calculate the MSE for the batch
@@ -170,7 +175,7 @@ class DavidNet(TorchDavidNet, pl.LightningModule):
         return loss
 
     def validation_step(
-        self, batch: dict[str, torch.Tensor], batch_idx: int
+        self, batch: Dict[str, torch.Tensor], batch_idx: int
     ) -> Tuple[torch.Tensor, ...]:
         """Perform validation step."""
         # calculate the MSE for the validation sample
