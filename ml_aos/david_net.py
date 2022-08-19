@@ -17,17 +17,32 @@ class DavidNet(nn.Module):
     predicts a set of Zernike coefficients.
     """
 
-    def __init__(self, n_meta_layers: int) -> None:
+    def __init__(self, n_meta_layers: int, input_shape: int = 256) -> None:
         """Create a WaveNet to predict Zernike coefficients for donut images.
 
         Parameters
         ----------
         n_meta_layers: int
             Number of fully connected layers in the MetaNet.
+        input_shape: int, default=256
+            The shape of the input (square) images. If smaller than 256,
+            images will be padded before passed to the network.
         """
         super().__init__()
         self.donut_net = DonutNet()
         self.meta_net = MetaNet(n_meta_layers)
+
+        if (
+            (input_shape % 2 != 0)
+            or (not isinstance(input_shape, int))
+            or (input_shape > 256)
+        ):
+            raise ValueError("input_shape must be an even integer <= 256")
+        elif input_shape == 256:
+            self.padder = lambda x: x
+        else:
+            pad = int((256 - input_shape) / 2)
+            self.padder = nn.ZeroPad2d(pad)
 
     def forward(
         self,
@@ -54,7 +69,8 @@ class DavidNet(nn.Module):
         torch.Tensor
             Array of Zernike coefficients
         """
-        image_features = self.donut_net(image)
+        padded_image = self.padder(image)
+        image_features = self.donut_net(padded_image)
         features = torch.cat([image_features, fx, fy, intra], axis=1)
         return self.meta_net(features)
 

@@ -1,15 +1,15 @@
 """Wrapping everything for DavidNet in Pytorch Lightning."""
 
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
-import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import torch
 import wandb
 from torch.utils.data import DataLoader
 
-from ml_aos.dataloader import Donuts
+from ml_aos.dataloader import DavidsDonuts, JFsDonuts
 from ml_aos.david_net import DavidNet as TorchDavidNet
+from ml_aos.plotting import plot_zernikes
 
 
 class DonutLoader(pl.LightningDataModule):
@@ -17,57 +17,19 @@ class DonutLoader(pl.LightningDataModule):
 
     def __init__(
         self,
-        background: bool = True,
-        badpix: bool = True,
-        dither: int = 5,
-        max_blend: float = 0.50,
-        center_brightest: bool = True,
-        normalize_pixels: bool = True,
-        convert_zernikes: bool = True,
-        mask_buffer: int = 0,
-        nval: int = 2 ** 16,
-        ntest: int = 2 ** 16,
-        split_seed: int = 0,
+        sims: str = "JF",
         batch_size: int = 64,
         num_workers: int = 16,
         persistent_workers: bool = True,
         pin_memory: bool = True,
-        data_dir: str = "/epyc/users/jfc20/thomas_aos_sims/",
+        **kwargs: Any,
     ) -> None:
         """Load the simulated Donuts data.
 
         Parameters
         ----------
-        mode: str, default="train"
-            Which set to load. Options are train, val (i.e. validation),
-            or test.
-        background: bool, default=True
-            Whether to add the sky background to the donut images.
-        badpix: bool, default=True
-            Whether to simulate bad pixels and columns.
-        dither: int, default=5
-            Maximum number of pixels to dither in both directions.
-            This simulates mis-centering.
-        max_blend: float, default=0.50
-            Maximum fraction of the central star to be blended. For images
-            with many blends, only the first handful of stars will be drawn,
-            stopping when the next star would pass this blend threshold.
-        center_brightest: bool, default=True
-            Whether to center the brightest star in blended images.
-        normalize_pixels: bool, default=True
-            Whether to normalize the pixel values using the mean and std
-            of the single-donut pixels.
-        convert_zernikes: bool, default=True
-            Whether to convert Zernike coefficients from units of r band
-            wavelength to quadrature contribution to PSF FWHM.
-        mask_buffer: int, default=0
-            The number of buffer pixels to add to outside of masks.
-        nval: int, default=256
-            Number of donuts in the validation set.
-        ntest: int, default=2048
-            Number of donuts in the test set
-        split_seed: int, default=0
-            Random seed for training set/test set/validation set selection.
+        sims: str, default="JF"
+            Which set of simulations to use. Either "JF" or "David".
         batch_size: int, default=64
             The batch size for SGD.
         num_workers: int, default=16
@@ -77,30 +39,21 @@ class DonutLoader(pl.LightningDataModule):
         pin_memory: bool, default=True
             Whether to automatically put data in pinned memory (recommended
             whenever using a GPU).
-        data_dir: str, default=/epyc/users/jfc20/thomas_aos_sims/
-            Location of the data directory. The default location is where
-            I stored the simulations on epyc.
+        **kwargs
+            See the keyword arguments in the two DataLoader Classes.
         """
         super().__init__()
         self.save_hyperparameters()
+        if sims == "JF":
+            self._donut_loader = JFsDonuts
+        elif sims == "David":
+            self._donut_loader = DavidsDonuts  # type: ignore
+        else:
+            raise ValueError("sims must be 'JF' or 'David'.")
 
     def _build_loader(self, mode: str, shuffle: bool = False) -> DataLoader:
         return DataLoader(
-            Donuts(
-                mode=mode,
-                background=self.hparams.background,
-                badpix=self.hparams.badpix,
-                dither=self.hparams.dither,
-                max_blend=self.hparams.max_blend,
-                center_brightest=self.hparams.center_brightest,
-                normalize_pixels=self.hparams.normalize_pixels,
-                convert_zernikes=self.hparams.convert_zernikes,
-                mask_buffer=self.hparams.mask_buffer,
-                nval=self.hparams.nval,
-                ntest=self.hparams.ntest,
-                split_seed=self.hparams.split_seed,
-                data_dir=self.hparams.data_dir,
-            ),
+            self._donut_loader(**self.hparams),
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
             persistent_workers=self.hparams.persistent_workers,
@@ -247,98 +200,3 @@ def calc_mse(pred: torch.Tensor, true: torch.Tensor) -> torch.Tensor:
         Array of MSE values
     """
     return torch.mean((pred - true) ** 2, axis=1, keepdim=True)
-
-
-def plot_zernikes(z_true: torch.Tensor, z_pred: torch.Tensor) -> plt.Figure:
-    """Plot true and predicted zernikes (up to 8).
-
-    Parameters
-    ----------
-    z_true: torch.Tensor
-        2D Array of true Zernike coefficients
-    z_pred: torch.Tensor
-        2D Array of predicted Zernike coefficients
-
-    Returns
-    -------
-    plt.Figure
-        Figure containing the 8 axes with the true and predicted Zernike
-        coefficients plotted together.
-    """
-    # create the figure
-    fig, axes = plt.subplots(
-        2,
-        4,
-        figsize=(12, 5),
-        constrained_layout=True,
-        dpi=150,
-        sharex=True,
-        sharey=True,
-    )
-
-    # loop through the axes/zernikes
-    for ax, zt, zp in zip(axes.flatten(), z_true, z_pred):
-        ax.plot(zt, label="True")
-        ax.plot(zp, label="Predicted")
-
-    axes[0, 0].set(xticks=[])  # remove x ticks
-    axes[0, 0].legend()  # add legend to first panel
-
-    # set axis labels
-    for ax in axes[:, 0]:
-        ax.set_ylabel("Arcsec FWHM")
-    for ax in axes[1, :]:
-        ax.set_xlabel("Zernike number (Noll)")
-
-    return fig
-
-
-def plot_loss_vs_blended(
-    frac_blended: torch.Tensor, val_loss: torch.Tensor
-) -> plt.Figure:
-    """Plot validation loss vs the fraction blended
-
-    Parameters
-    ----------
-    frac_blended: torch.Tensor
-        Array of blend fraction.
-    val_loss: torch.Tensor
-        Array of validation losses
-
-    Returns
-    -------
-    plt.Figure
-        Figure containing plot of validation loss vs fraction blended
-    """
-    fig, ax = plt.subplots(constrained_layout=True, dpi=150)
-    ax.scatter(frac_blended[:100], val_loss[:100], marker=".", rasterized=True)
-    ax.set(xlabel="Fraction blended", ylabel="Validation loss [arcsec FWHM]")
-    return fig
-
-
-def plot_loss_vs_distance(
-    distance: torch.Tensor, val_loss: torch.Tensor
-) -> plt.Figure:
-    """Plot validation loss vs the distance from the center of the focal
-    plane, in meters.
-
-    Parameters
-    ----------
-    distance: torch.Tensor
-        Array of distances from the center of the focal plane, in meters
-    val_loss: torch.Tensor
-        Array of validation losses
-
-    Returns
-    -------
-    plt.Figure
-        Figure containing plot of validation loss vs distance from center
-        of the focal plane
-    """
-    fig, ax = plt.subplots(constrained_layout=True, dpi=150)
-    ax.scatter(distance, val_loss, marker=".")
-    ax.set(
-        xlabel="Dist. from center of focal plane [m]",
-        ylabel="Validation loss [arcsec FWHM]",
-    )
-    return fig

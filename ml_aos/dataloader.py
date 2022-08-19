@@ -2,20 +2,23 @@
 
 Based on code written by David Thomas for his PhD Thesis at Stanford.
 """
-
-from typing import Dict, Tuple
+import glob
+from typing import Any, Dict, Tuple
 
 import galsim
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import torch
+from astropy.table import Table
 from scipy import ndimage
 from torch.utils.data import Dataset
 
+from ml_aos.utils import convert_zernikes
 
-class Donuts(Dataset):
-    """Data set of AOS donuts and zernikes."""
+
+class DavidsDonuts(Dataset):
+    """Data set of AOS donuts and zernikes from David Thomas's simulations."""
 
     # number of blended and unblended simulations in the full set
     _N_UNBLENDED = 500_000
@@ -47,8 +50,9 @@ class Donuts(Dataset):
         nval: int = 2 ** 16,
         ntest: int = 2 ** 16,
         split_seed: int = 0,
-        data_dir: str = "/epyc/users/jfc20/thomas_aos_sims/",
-    ):
+        data_dir: str = "/astro/store/epyc/users/jfc20/thomas_aos_sims/",
+        **kwargs: Any,
+    ) -> None:
         """Load the simulated AOS donuts and zernikes in a Pytorch Dataset.
 
         Parameters
@@ -168,15 +172,17 @@ class Donuts(Dataset):
             The dictionary contains the following pytorch tensors
                 image: donut image, shape=(256, 256)
                 mask: donut mask, shape=(256, 256)
-                field_x, field_y: the field location in radians
+                field_x, field_y: the field angle in radians
                 focal_x, focal_y: the focal plane position in radians
                 intrafocal: boolean flag. 0 = extrafocal, 1 = intrafocal
                 zernikes: Noll zernikes coefficients 4-21, inclusive
                 n_blends: the number of blending stars in the image
                 fraction_blended: fraction of the central donut blended
         """
-        if idx < 0 or idx > len(self):
+        if idx >= len(self):
             raise ValueError("idx out of bounds.")
+        elif idx < 0:
+            idx += len(self)
 
         # determine the amount of dithering
         dither = self.settings["dither"]  # max size of dither
@@ -210,7 +216,7 @@ class Donuts(Dataset):
             self._apply_badpix(img, mask, seed=idx)
 
         # reshape the images so they have a channel index
-        img = img.reshape(1, 256, 256)
+        img = img[None, :, :]
 
         # normalize the pixel values using the pixel mean and pixel std
         if self.settings["normalize_pixels"]:
@@ -218,7 +224,7 @@ class Donuts(Dataset):
 
         # convert zernikes to their contribution to FWHM
         if self.settings["convert_zernikes"]:
-            zernikes = self._convert_zernikes(zernikes)
+            zernikes = convert_zernikes(zernikes)
 
         # convert outputs to torch tensors and return in a dictionary
         output = {
@@ -273,7 +279,7 @@ class Donuts(Dataset):
         mask: np.ndarray, shape=(256, 256)
             boolean array masking out background
         fx, fy: float
-            the field location in radians
+            the field angle in radians
         px, py: float
             the focal plane position in radians
         intrafocal: bool
@@ -352,7 +358,7 @@ class Donuts(Dataset):
         mask: np.ndarray, shape=(256, 256)
             boolean array masking out background and blends
         fx, fy: float
-            the field location of the primary donut in radians
+            the field angle of the primary donut in radians
         px, py: float
             the focal plane position of the primary donut in radians
         intrafocal: bool
@@ -594,50 +600,177 @@ class Donuts(Dataset):
             img[start:end, col] = 0
             mask[start:end, col] = 0
 
-    def _convert_zernikes(
-        self, zernikes: npt.NDArray[np.float64]
-    ) -> npt.NDArray[np.float64]:
-        """Convert zernike units from r-band wavelength to quadrature
-        contribution to FWHM.
+
+class JFsDonuts(Dataset):
+    """AOS donuts and zernikes from John Franklin Crenshaw's simulations.
+
+    This loads donuts NOT saved in the butler!
+    """
+
+    # estimated mean and std of pixel values for individual donuts
+    PIXEL_MEAN = 106.82
+    PIXEL_STD = 154.10
+
+    def __init__(
+        self,
+        mode: str = "train",
+        isoMagDiff: float = 2,
+        normalize_pixels: bool = True,
+        convert_zernikes: bool = True,
+        nval: int = 256,
+        ntest: int = 2048,
+        split_seed: int = 0,
+        data_dir: str = "/astro/store/epyc/users/jfc20/aos_sims",
+        **kwargs: Any,
+    ) -> None:
+        """Load the simulated AOS donuts and zernikes in a Pytorch Dataset.
 
         Parameters
         ----------
-        zernikes: np.ndarray
-            Array of zernike coefficients in units of r-band wavelength
+        mode: str, default="train"
+            Which set to load. Options are train, val (i.e. validation),
+            or test.
+        isoMagDiff: float, default=2
+            The maximum difference between the magnitudes of the central donut
+            and a blending donut for the blend to count.
+        normalize_pixels: bool, default=True
+            Whether to normalize the pixel values using the mean and std
+            of the single-donut pixels.
+        convert_zernikes: bool, default=True
+            Whether to convert Zernike coefficients from units of r band
+            wavelength to quadrature contribution to PSF FWHM.
+        nval: int, default=256
+            Number of donuts in the validation set.
+        ntest: int, default=2048
+            Number of donuts in the test set
+        split_seed: int, default=0
+            Random seed for training set/test set/validation set selection.
+        data_dir: str, default=/epyc/users/jfc20/thomas_aos_sims/
+            Location of the data directory. The default location is where
+            I stored the simulations on epyc.
+        """
+        # save the settings
+        self.settings = {
+            "isoMagDiff": isoMagDiff,
+            "normalize_pixels": normalize_pixels,
+            "convert_zernikes": convert_zernikes,
+            "data_dir": data_dir,
+        }
+
+        rng = np.random.default_rng(split_seed)
+
+        # get the image files and randomly shuffle them
+        image_files = glob.glob(f"{data_dir}/images/*")
+        rng.shuffle(image_files)
+
+        # get the appropriate set of images
+        if mode == "train":
+            self._image_files = image_files[: -(nval + ntest)]
+        elif mode == "val":
+            self._image_files = image_files[-(nval + ntest) : -ntest]
+        elif mode == "test":
+            self._image_files = image_files[-ntest:]
+
+        # get the table of metadata for each observation
+        self.observations = Table.read(f"{data_dir}/observations.parquet")
+
+    def __len__(self) -> int:
+        """Return length of this Dataset."""
+        return len(self._image_files)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Return simulation corresponding to the index.
+
+        Parameters
+        ----------
+        idx: int
+            The index of the simulation to return.
 
         Returns
         -------
-        np.ndarray
-            Array of zernike coefficients in units of quadrature contribution
-            to FWHM
+        dict
+            The dictionary contains the following pytorch tensors
+                image: donut image, shape=(256, 256)
+                mask: donut mask, shape=(256, 256)
+                field_x, field_y: the field angle in radians
+                detector_x, detector_y: position on the detector in pixels
+                intrafocal: boolean flag. 0 = extrafocal, 1 = intrafocal
+                zernikes: Noll zernikes coefficients 4-21, inclusive
+                n_blends: the number of blending stars in the image
+                fraction_blended: fraction of the central donut blended
         """
+        # get the image file
+        img_file = self._image_files[idx]
 
-        rband_eff_wave = 0.6173  # microns
+        # load the image
+        img = np.load(img_file)
 
-        # these conversion factors depend on telescope radius and obscuration
-        # the numbers below are for the Rubin telescope; different numbers
-        # are needed for Auxtel. Source: Josh Meyers
-        arcsec_per_micron = np.array(
-            [
-                1.062,  # Z4
-                0.384,  # Z5
-                0.384,  # Z6
-                1.159,  # Z7
-                1.159,  # Z8
-                0.560,  # Z9
-                0.560,  # Z10
-                2.375,  # Z11
-                1.325,  # Z12
-                1.325,  # Z13
-                0.730,  # Z14
-                0.730,  # Z15
-                2.482,  # Z16
-                2.482,  # Z17
-                1.541,  # Z18
-                1.541,  # Z19
-                0.898,  # Z20
-                0.898,  # Z21
-            ],
+        # reshape the images so they have a channel index
+        img = img[None, :, :]
+
+        # normalize the pixel values using the pixel mean and pixel std
+        if self.settings["normalize_pixels"]:
+            img = (img - self.PIXEL_MEAN) / self.PIXEL_STD
+
+        # create a fake mask. need to implement this later!
+        mask = np.ones_like(img)
+
+        # get the IDs
+        obsId, objId = img_file.split("/")[-1].split(".")[:2]
+
+        # get the catalog for this observation
+        catalog = Table.read(
+            f"{self.settings['data_dir']}/catalogs/{obsId}.catalog.parquet"
         )
+        self.catalog = catalog
 
-        return zernikes * rband_eff_wave * arcsec_per_micron
+        # get the row for this source
+        row = catalog[catalog["objectId"] == int(objId[3:])][0]
+
+        # get the donut locations
+        fx, fy = row["xField"], row["yField"]
+        px, py = row["xCentroid"], row["yCentroid"]
+
+        # get the intra/extra flag
+        intra = "SW1" in row["detector"]
+
+        # load the zernikes
+        zernikes = np.load(
+            (
+                f"{self.settings['data_dir']}/zernikes/"
+                f"{obsId}.detector{row['detector'][:3]}.zernikes.npy"
+            )
+        )[:-1]
+
+        # convert zernikes to their contribution to FWHM
+        if self.settings["convert_zernikes"]:
+            zernikes = convert_zernikes(zernikes)
+
+        # load the degrees of freedom
+        dofs = np.load(f"{self.settings['data_dir']}/dofs/{obsId}.dofs.npy")
+
+        # blends
+        # get the donuts blending in our image
+        blends = catalog[catalog["blendId"] == int(objId[3:])]
+        # ignore the central donut
+        blends = blends[blends["aosSource"] == False]  # noqa: E712
+        # set a max magnitude difference to count as blended
+        blends = blends[
+            blends["lsstMag"] < row["lsstMag"] + self.settings["isoMagDiff"]
+        ]
+        nb = len(blends)
+
+        output = {
+            "image": torch.from_numpy(img).float(),
+            "mask": mask,
+            "field_x": torch.FloatTensor([fx]),
+            "field_y": torch.FloatTensor([fy]),
+            "detector_x": torch.FloatTensor([px]),
+            "detector_y": torch.FloatTensor([py]),
+            "intrafocal": torch.FloatTensor([intra]),
+            "zernikes": torch.from_numpy(zernikes).float(),
+            "dofs": torch.from_numpy(dofs).float(),
+            "n_blends": torch.ByteTensor([nb]),
+        }
+
+        return output
