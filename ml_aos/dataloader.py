@@ -49,7 +49,7 @@ class DavidsDonuts(Dataset):
         mask_buffer: int = 0,
         nval: int = 2 ** 16,
         ntest: int = 2 ** 16,
-        split_seed: int = 0,
+        seed: int = 0,
         data_dir: str = "/astro/store/epyc/users/jfc20/thomas_aos_sims/",
         **kwargs: Any,
     ) -> None:
@@ -85,7 +85,7 @@ class DavidsDonuts(Dataset):
             Number of donuts in the validation set.
         ntest: int, default=2048
             Number of donuts in the test set
-        split_seed: int, default=0
+        seed: int, default=0
             Random seed for training set/test set/validation set selection.
         data_dir: str, default=/epyc/users/jfc20/thomas_aos_sims/
             Location of the data directory. The default location is where
@@ -114,7 +114,7 @@ class DavidsDonuts(Dataset):
         }
 
         # determine the indices of the val and test sets
-        rng = np.random.default_rng(split_seed)
+        rng = np.random.default_rng(seed)
         holdout = rng.choice(
             self._N_UNBLENDED + self._N_BLENDED, nval + ntest, replace=False
         )
@@ -619,7 +619,7 @@ class JFsDonuts(Dataset):
         convert_zernikes: bool = True,
         nval: int = 256,
         ntest: int = 2048,
-        split_seed: int = 0,
+        seed: int = 0,
         data_dir: str = "/astro/store/epyc/users/jfc20/aos_sims",
         **kwargs: Any,
     ) -> None:
@@ -643,7 +643,7 @@ class JFsDonuts(Dataset):
             Number of donuts in the validation set.
         ntest: int, default=2048
             Number of donuts in the test set
-        split_seed: int, default=0
+        seed: int, default=0
             Random seed for training set/test set/validation set selection.
         data_dir: str, default=/epyc/users/jfc20/thomas_aos_sims/
             Location of the data directory. The default location is where
@@ -657,7 +657,7 @@ class JFsDonuts(Dataset):
             "data_dir": data_dir,
         }
 
-        rng = np.random.default_rng(split_seed)
+        rng = np.random.default_rng(seed)
 
         # get the image files and randomly shuffle them
         image_files = glob.glob(f"{data_dir}/images/*")

@@ -2,7 +2,7 @@
 import os
 
 import pytorch_lightning as pl
-from pytorch_lightning.utilities.cli import LightningCLI
+from pytorch_lightning.cli import LightningCLI
 
 from ml_aos.lightning import DavidNet, DonutLoader
 
