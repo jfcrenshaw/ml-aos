@@ -53,7 +53,7 @@ class DonutLoader(pl.LightningDataModule):
 
     def _build_loader(self, mode: str, shuffle: bool = False) -> DataLoader:
         return DataLoader(
-            self._donut_loader(**self.hparams),
+            self._donut_loader(mode, **self.hparams),
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
             persistent_workers=self.hparams.persistent_workers,
@@ -147,9 +147,7 @@ class DavidNet(TorchDavidNet, pl.LightningModule):
             # draw the Zernike figure and convert to wandb image for logging
             fig = wandb.Image(plot_zernikes(z_true.cpu(), z_pred.cpu()))
             # log the image
-            wandb.log(
-                {"zernikes": fig, "global_step": self.trainer.global_step}
-            )
+            wandb.log({"zernikes": fig, "global_step": self.trainer.global_step})
             del fig
 
         """# calculate distance from the center of focal plane in meters
