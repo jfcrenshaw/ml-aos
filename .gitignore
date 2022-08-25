@@ -136,6 +136,7 @@ dmypy.json
 
 # wandb files
 experiments/wandb
+wandb
 
 # vscode settings
 .vscode

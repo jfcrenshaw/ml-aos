@@ -94,9 +94,7 @@ class DavidsDonuts(Dataset):
         # check that the mode is valid
         allowed_modes = ["train", "val", "test"]
         if mode not in allowed_modes:
-            raise ValueError(
-                f"mode must be one of {', '.join(allowed_modes)}."
-            )
+            raise ValueError(f"mode must be one of {', '.join(allowed_modes)}.")
 
         # save the data directory
         self.DATA_DIR = data_dir
@@ -412,10 +410,7 @@ class DavidsDonuts(Dataset):
 
             # if we are centering the brightest star, blending stars might
             # be out of frame. We can skip these.
-            if (
-                abs(n_dx) > 0.9 * n_img.shape[0]
-                or abs(n_dy) > 0.9 * n_img.shape[0]
-            ):
+            if abs(n_dx) > 0.9 * n_img.shape[0] or abs(n_dy) > 0.9 * n_img.shape[0]:
                 continue
 
             # shift the image and mask
@@ -427,9 +422,7 @@ class DavidsDonuts(Dataset):
 
             # calculate the fraction blended
             central_overlap = _neighbor_mask[central_mask]
-            _fraction_blended = (
-                np.count_nonzero(central_overlap) / central_overlap.size
-            )
+            _fraction_blended = np.count_nonzero(central_overlap) / central_overlap.size
 
             # if the new fraction blended is too high, skip this star
             if _fraction_blended > self.settings["max_blend"]:
@@ -551,9 +544,7 @@ class DavidsDonuts(Dataset):
         read_noise = (4.7 + 6.1) / 2
 
         # generate noise using GalSim
-        sky_level = (
-            (t_exp / gain) * 10 ** ((m_zero - m_sky) / 2.5) * plate_scale ** 2
-        )
+        sky_level = (t_exp / gain) * 10 ** ((m_zero - m_sky) / 2.5) * plate_scale ** 2
         noise = galsim.CCDNoise(
             galsim.BaseDeviate(np.random.randint(2 ** 16)),
             sky_level=sky_level,
@@ -619,7 +610,6 @@ class JFsDonuts(Dataset):
         convert_zernikes: bool = True,
         nval: int = 256,
         ntest: int = 2048,
-        seed: int = 0,
         data_dir: str = "/astro/store/epyc/users/jfc20/aos_sims",
         **kwargs: Any,
     ) -> None:
@@ -643,8 +633,6 @@ class JFsDonuts(Dataset):
             Number of donuts in the validation set.
         ntest: int, default=2048
             Number of donuts in the test set
-        seed: int, default=0
-            Random seed for training set/test set/validation set selection.
         data_dir: str, default=/epyc/users/jfc20/thomas_aos_sims/
             Location of the data directory. The default location is where
             I stored the simulations on epyc.
@@ -657,19 +645,39 @@ class JFsDonuts(Dataset):
             "data_dir": data_dir,
         }
 
-        rng = np.random.default_rng(seed)
-
-        # get the image files and randomly shuffle them
+        # get the image files
         image_files = glob.glob(f"{data_dir}/images/*")
-        rng.shuffle(image_files)
 
-        # get the appropriate set of images
+        # get the test set
+        test_set = image_files[-ntest:]
+        testIds = list(set([file.split("/")[-1].split(".")[0] for file in test_set]))
+
+        # remove the non-test set images that were in the same observation as a test
+        # set image (because they have the same perturbations)
+        rest = [
+            file
+            for file in image_files
+            if not any(testId in file for testId in testIds)
+        ]
+
+        # get the validation set
+        val_set = rest[-nval:]
+        valIds = list(set([file.split("/")[-1].split(".")[0] for file in val_set]))
+
+        # remove the non-validation set images that were in the same observation as a
+        # validation set image (because they have the same perturbations)
+        rest = [file for file in rest if not any(valId in file for valId in valIds)]
+
+        # the rest of the files will be used for training
+        train_set = rest
+
+        # set the image files to the requested set
         if mode == "train":
-            self._image_files = image_files[: -(nval + ntest)]
+            self._image_files = train_set
         elif mode == "val":
-            self._image_files = image_files[-(nval + ntest) : -ntest]
+            self._image_files = val_set
         elif mode == "test":
-            self._image_files = image_files[-ntest:]
+            self._image_files = test_set
 
         # get the table of metadata for each observation
         self.observations = Table.read(f"{data_dir}/observations.parquet")

@@ -4,9 +4,9 @@ from typing import Any, Dict, Tuple
 
 import pytorch_lightning as pl
 import torch
-import wandb
 from torch.utils.data import DataLoader
 
+import wandb
 from ml_aos.dataloader import DavidsDonuts, JFsDonuts
 from ml_aos.david_net import DavidNet as TorchDavidNet
 from ml_aos.plotting import plot_zernikes
@@ -59,6 +59,7 @@ class DonutLoader(pl.LightningDataModule):
             persistent_workers=self.hparams.persistent_workers,
             pin_memory=self.hparams.pin_memory,
             shuffle=shuffle,
+            drop_last=True,
         )
 
     def train_dataloader(self) -> DataLoader:
@@ -77,7 +78,7 @@ class DonutLoader(pl.LightningDataModule):
 class DavidNet(TorchDavidNet, pl.LightningModule):
     """Pytorch Lightning wrapper for training DavidNet."""
 
-    def __init__(self, n_meta_layers: int = 3) -> None:
+    def __init__(self, n_meta_layers: int = 3, input_shape: int = 256) -> None:
         """Create the DavidNet.
 
         Parameters
@@ -89,7 +90,7 @@ class DavidNet(TorchDavidNet, pl.LightningModule):
         """
         # set up the DavidNet implemented in torch,
         # as well as the LightningModule boilerplate
-        super().__init__(n_meta_layers=n_meta_layers)
+        super().__init__(n_meta_layers=n_meta_layers, input_shape=input_shape)
 
         # save the hyperparams in the log
         self.save_hyperparameters()
@@ -151,7 +152,7 @@ class DavidNet(TorchDavidNet, pl.LightningModule):
             )
             del fig
 
-        # calculate distance from the center of focal plane in meters
+        """# calculate distance from the center of focal plane in meters
         x = batch["focal_x"]
         y = batch["focal_y"]
         dist_rads = torch.sqrt(x ** 2 + y ** 2)  # distance in radians
@@ -162,13 +163,15 @@ class DavidNet(TorchDavidNet, pl.LightningModule):
         # get the fraction blended
         frac_blended = batch["fraction_blended"]
 
-        val_outputs = torch.hstack((dist_meters, frac_blended, mse))
+        val_outputs = torch.hstack((dist_meters, frac_blended, mse))"""
+
+        val_outputs = mse
 
         return val_outputs
 
     def validation_epoch_end(self, val_outputs: torch.Tensor) -> None:
         """Compute metrics for the whole validation epoch."""
-        # extract the validation outputs
+        """ # extract the validation outputs
         val_outputs = torch.stack(val_outputs).reshape(-1, 3)
         frac_blended = val_outputs[:, 1]
         mse = val_outputs[:, 2]
@@ -181,7 +184,11 @@ class DavidNet(TorchDavidNet, pl.LightningModule):
         # compute the validation loss for the blended stars
         blended_idx = torch.where(frac_blended >= 0.01)
         self.log("val_rmse_blended", torch.sqrt(mse[blended_idx]).mean())
-        self.log("val_loss_blended", mse[blended_idx].mean())
+        self.log("val_loss_blended", mse[blended_idx].mean())"""
+
+        mse = torch.stack(val_outputs)
+        self.log("val_loss", mse.mean())
+        self.log("val_rmse", torch.sqrt(mse).mean())
 
 
 def calc_mse(pred: torch.Tensor, true: torch.Tensor) -> torch.Tensor:
