@@ -11,40 +11,38 @@ def convert_zernikes(
     Parameters
     ----------
     zernikes: np.ndarray
-        Array of zernike coefficients in units of r-band wavelength.
+        Array of zernike coefficients in microns.
 
     Returns
     -------
     np.ndarray
         Zernike coefficients in units of quadrature contribution to FWHM.
     """
-
-    rband_eff_wave = 0.6173  # microns
-
     # these conversion factors depend on telescope radius and obscuration
     # the numbers below are for the Rubin telescope; different numbers
-    # are needed for Auxtel. Source: Josh Meyers
-    arcsec_per_micron = np.array(  # type: ignore
-        [
-            1.062,  # Z4
-            0.384,  # Z5
-            0.384,  # Z6
-            1.159,  # Z7
-            1.159,  # Z8
-            0.560,  # Z9
-            0.560,  # Z10
-            2.375,  # Z11
-            1.325,  # Z12
-            1.325,  # Z13
-            0.730,  # Z14
-            0.730,  # Z15
-            2.482,  # Z16
-            2.482,  # Z17
-            1.541,  # Z18
-            1.541,  # Z19
-            0.898,  # Z20
-            0.898,  # Z21
-        ],
+    # are needed for Auxtel. For calculating these factors, see ts_phosim
+    arcsec_per_micron = np.array(
+        [  # type: ignore
+            0.751,  # Z4
+            0.271,  # Z5
+            0.271,  # Z6
+            0.819,  # Z7
+            0.819,  # Z8
+            0.396,  # Z9
+            0.396,  # Z10
+            1.679,  # Z11
+            0.937,  # Z12
+            0.937,  # Z13
+            0.517,  # Z14
+            0.517,  # Z15
+            1.755,  # Z16
+            1.755,  # Z17
+            1.089,  # Z18
+            1.089,  # Z19
+            0.635,  # Z20
+            0.635,  # Z21
+            2.810,  # Z22
+        ]
     )
 
-    return zernikes * rband_eff_wave * arcsec_per_micron
+    return zernikes * arcsec_per_micron

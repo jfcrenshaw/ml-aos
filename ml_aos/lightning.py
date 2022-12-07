@@ -51,15 +51,17 @@ class DonutLoader(pl.LightningDataModule):
         else:
             raise ValueError("sims must be 'JF' or 'David'.")
 
-    def _build_loader(self, mode: str, shuffle: bool = False) -> DataLoader:
+    def _build_loader(
+        self, mode: str, shuffle: bool = False, drop_last: bool = True
+    ) -> DataLoader:
         return DataLoader(
-            self._donut_loader(mode, **self.hparams),
+            self._donut_loader(mode=mode, **self.hparams),
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
             persistent_workers=self.hparams.persistent_workers,
             pin_memory=self.hparams.pin_memory,
             shuffle=shuffle,
-            drop_last=True,
+            drop_last=drop_last,
         )
 
     def train_dataloader(self) -> DataLoader:
@@ -68,11 +70,11 @@ class DonutLoader(pl.LightningDataModule):
 
     def val_dataloader(self) -> DataLoader:
         """Return the validation DataLoader."""
-        return self._build_loader("val")
+        return self._build_loader("val", drop_last=False)
 
     def test_dataloader(self) -> DataLoader:
         """Return the testing DataLoader."""
-        return self._build_loader("test")
+        return self._build_loader("test", drop_last=False)
 
 
 class DavidNet(TorchDavidNet, pl.LightningModule):

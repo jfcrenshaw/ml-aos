@@ -609,7 +609,7 @@ class JFsDonuts(Dataset):
         normalize_pixels: bool = True,
         convert_zernikes: bool = True,
         nval: int = 256,
-        ntest: int = 2048,
+        ntest: int = 2 ** 15,
         data_dir: str = "/astro/store/epyc/users/jfc20/aos_sims",
         **kwargs: Any,
     ) -> None:
@@ -633,7 +633,7 @@ class JFsDonuts(Dataset):
             Number of donuts in the validation set.
         ntest: int, default=2048
             Number of donuts in the test set
-        data_dir: str, default=/epyc/users/jfc20/thomas_aos_sims/
+        data_dir: str, default=/astro/store/epyc/users/jfc20/aos_sims
             Location of the data directory. The default location is where
             I stored the simulations on epyc.
         """
@@ -680,7 +680,7 @@ class JFsDonuts(Dataset):
             self._image_files = test_set
 
         # get the table of metadata for each observation
-        self.observations = Table.read(f"{data_dir}/observations.parquet")
+        self.observations = Table.read(f"{data_dir}/opSimTable.parquet")
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
@@ -706,6 +706,7 @@ class JFsDonuts(Dataset):
                 zernikes: Noll zernikes coefficients 4-21, inclusive
                 n_blends: the number of blending stars in the image
                 fraction_blended: fraction of the central donut blended
+                pointing: the pointing ID
         """
         # get the image file
         img_file = self._image_files[idx]
@@ -724,11 +725,11 @@ class JFsDonuts(Dataset):
         mask = np.ones_like(img)
 
         # get the IDs
-        obsId, objId = img_file.split("/")[-1].split(".")[:2]
+        pntId, obsId, objId = img_file.split("/")[-1].split(".")[:3]
 
         # get the catalog for this observation
         catalog = Table.read(
-            f"{self.settings['data_dir']}/catalogs/{obsId}.catalog.parquet"
+            f"{self.settings['data_dir']}/catalogs/{pntId}.catalog.parquet"
         )
         self.catalog = catalog
 
@@ -746,16 +747,16 @@ class JFsDonuts(Dataset):
         zernikes = np.load(
             (
                 f"{self.settings['data_dir']}/zernikes/"
-                f"{obsId}.detector{row['detector'][:3]}.zernikes.npy"
+                f"{pntId}.{obsId}.detector{row['detector'][:3]}.zernikes.npy"
             )
-        )[:-1]
+        )
 
         # convert zernikes to their contribution to FWHM
         if self.settings["convert_zernikes"]:
             zernikes = convert_zernikes(zernikes)
 
         # load the degrees of freedom
-        dofs = np.load(f"{self.settings['data_dir']}/dofs/{obsId}.dofs.npy")
+        dof = np.load(f"{self.settings['data_dir']}/dof/{pntId}.dofs.npy")
 
         # blends
         # get the donuts blending in our image
@@ -768,17 +769,22 @@ class JFsDonuts(Dataset):
         ]
         nb = len(blends)
 
+        # get the observation for this source
+        obs = self.observations[self.observations["observationId"] == int(obsId[3:])][0]
+
+        # convert the band name to a number
+        bandId = {band: i for i, band in enumerate("ugrizy")}[obs["lsstFilter"]]
+
+        pntId, obsId, objId
         output = {
             "image": torch.from_numpy(img).float(),
-            "mask": mask,
             "field_x": torch.FloatTensor([fx]),
             "field_y": torch.FloatTensor([fy]),
-            "detector_x": torch.FloatTensor([px]),
-            "detector_y": torch.FloatTensor([py]),
             "intrafocal": torch.FloatTensor([intra]),
             "zernikes": torch.from_numpy(zernikes).float(),
-            "dofs": torch.from_numpy(dofs).float(),
-            "n_blends": torch.ByteTensor([nb]),
+            "pntId": int(pntId[3:]),
+            "obsId": int(obsId[3:]),
+            "objId": int(objId[3:]),
         }
 
         return output

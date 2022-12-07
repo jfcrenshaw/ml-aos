@@ -221,7 +221,7 @@ class MetaNet(nn.Module):
     """
 
     # number of Zernike coefficients to predict
-    N_ZERNIKES = 18
+    N_ZERNIKES = 19
     # number of meta parameters to use in prediction
     N_METAS = 3
 
