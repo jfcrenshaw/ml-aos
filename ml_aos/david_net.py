@@ -71,7 +71,7 @@ class DavidNet(nn.Module):
         """
         padded_image = self.padder(image)
         image_features = self.donut_net(padded_image)
-        features = torch.cat([image_features, fx, fy, intra], axis=1)
+        features = torch.cat([image_features, fx, fy, intra], dim=1)
         return self.meta_net(features)
 
 
@@ -252,8 +252,8 @@ class MetaNet(nn.Module):
         for i in range(n_layers - 1):
             self.layers.extend(
                 [
-                    nn.Linear(n_nodes[i], n_nodes[i + 1]),
-                    nn.BatchNorm1d(n_nodes[i + 1]),
+                    nn.Linear(int(n_nodes[i]), int(n_nodes[i + 1])),
+                    nn.BatchNorm1d(int(n_nodes[i + 1])),
                     nn.ReLU(inplace=True),
                 ]
             )
@@ -263,7 +263,7 @@ class MetaNet(nn.Module):
                 self.layers.append(nn.Dropout(0.1))
 
         # create the output layer, which doesn't have BatchNorm or ReLU
-        self.layers.append(nn.Linear(n_nodes[-2], n_nodes[-1]))
+        self.layers.append(nn.Linear(int(n_nodes[-2]), int(n_nodes[-1])))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Map image features and meta parameters onto Zernikes.
