@@ -1,14 +1,15 @@
-"""Pytorch neural network to predict zernike coefficients from donut images.
+"""Neural network to predict zernike coefficients from donut images.
 
-My implementation of the network presented in David Thomas's PhD Thesis
-at Stanford.
+This is my Pytorch Lightning implementation (with modifications)
+of the network presented in David Thomas's PhD Thesis at Stanford:
+https://searchworks.stanford.edu/view/14053719
 """
 import numpy as np
 import torch
 from torch import nn
 
 
-class DavidNet(nn.Module):
+class WaveNet(nn.Module):
     """Network to predict wavefront Zernike coefficients from donut images.
 
     Consists of a DonutNet that creates image features from the donut image.
@@ -17,32 +18,40 @@ class DavidNet(nn.Module):
     predicts a set of Zernike coefficients.
     """
 
-    def __init__(self, n_meta_layers: int, input_shape: int = 256) -> None:
+    def __init__(self, n_meta_layers: int) -> None:
         """Create a WaveNet to predict Zernike coefficients for donut images.
 
         Parameters
         ----------
         n_meta_layers: int
             Number of fully connected layers in the MetaNet.
-        input_shape: int, default=256
-            The shape of the input (square) images. If smaller than 256,
-            images will be padded before passed to the network.
         """
         super().__init__()
-        self.donut_net = DonutNet()
-        self.meta_net = MetaNet(n_meta_layers)
 
-        if (
-            (input_shape % 2 != 0)
-            or (not isinstance(input_shape, int))
-            or (input_shape > 256)
-        ):
-            raise ValueError("input_shape must be an even integer <= 256")
-        elif input_shape == 256:
-            self.padder = lambda x: x
-        else:
-            pad = int((256 - input_shape) / 2)
-            self.padder = nn.ZeroPad2d(pad)
+        # first define some parameters that will be accessed by
+        # the MachineLearningAlgorithm in ts_wep
+        self.camType = "LsstCam"
+        self.inputShape = (170, 170)  # just the 2D image shape
+
+        # also define the mean and std for data whitening
+        # these were determined from a small sample of the training set
+        self.PIXEL_MEAN = 106.82
+        self.PIXEL_STD = 154.10
+
+        # -------------------------------------------
+        # now create the components of the WaveNet...
+        # -------------------------------------------
+
+        # first we will pad incoming images to reach a 256x256 shape
+        pad = int((256 - self.inputShape[-1]) / 2)
+        self.padder = nn.ZeroPad2d(pad)
+
+        # then the DonutNet makes image features
+        self.donut_net = DonutNet()
+
+        # finally the MetaNet takes the image features and some metadata
+        # and predicts the zernikes in microns
+        self.meta_net = MetaNet(n_meta_layers)
 
     def forward(
         self,
@@ -69,6 +78,7 @@ class DavidNet(nn.Module):
         torch.Tensor
             Array of Zernike coefficients
         """
+        image = (image - self.PIXEL_MEAN) / self.PIXEL_STD
         padded_image = self.padder(image)
         image_features = self.donut_net(padded_image)
         features = torch.cat([image_features, fx, fy, intra], dim=1)
@@ -225,7 +235,7 @@ class MetaNet(nn.Module):
     # number of meta parameters to use in prediction
     N_METAS = 3
 
-    # the dimenson of the image features. This is determined by looking
+    # the dimension of the image features. This is determined by looking
     # at the dimension of outputs from DonutNet
     IMAGE_DIM = 1024
 

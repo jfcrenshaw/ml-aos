@@ -1,4 +1,4 @@
-"""Wrapping everything for DavidNet in Pytorch Lightning."""
+"""Wrapping everything for WaveNet in Pytorch Lightning."""
 
 from typing import Any, Dict, Tuple
 
@@ -7,9 +7,10 @@ import torch
 from torch.utils.data import DataLoader
 
 import wandb
-from ml_aos.dataloader import DavidsDonuts, JFsDonuts
-from ml_aos.david_net import DavidNet as TorchDavidNet
+from ml_aos.dataloader import Donuts
+from ml_aos.wave_net import WaveNet as TorchWaveNet
 from ml_aos.plotting import plot_zernikes
+from ml_aos.utils import calc_mse
 
 
 class DonutLoader(pl.LightningDataModule):
@@ -17,7 +18,6 @@ class DonutLoader(pl.LightningDataModule):
 
     def __init__(
         self,
-        sims: str = "JF",
         batch_size: int = 64,
         num_workers: int = 16,
         persistent_workers: bool = True,
@@ -28,8 +28,6 @@ class DonutLoader(pl.LightningDataModule):
 
         Parameters
         ----------
-        sims: str, default="JF"
-            Which set of simulations to use. Either "JF" or "David".
         batch_size: int, default=64
             The batch size for SGD.
         num_workers: int, default=16
@@ -40,22 +38,17 @@ class DonutLoader(pl.LightningDataModule):
             Whether to automatically put data in pinned memory (recommended
             whenever using a GPU).
         **kwargs
-            See the keyword arguments in the two DataLoader Classes.
+            See the keyword arguments in the Donuts class.
         """
         super().__init__()
         self.save_hyperparameters()
-        if sims == "JF":
-            self._donut_loader = JFsDonuts
-        elif sims == "David":
-            self._donut_loader = DavidsDonuts  # type: ignore
-        else:
-            raise ValueError("sims must be 'JF' or 'David'.")
 
     def _build_loader(
         self, mode: str, shuffle: bool = False, drop_last: bool = True
     ) -> DataLoader:
+        """Build a DataLoader"""
         return DataLoader(
-            self._donut_loader(mode=mode, **self.hparams),
+            Donuts(mode=mode, **self.hparams),
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
             persistent_workers=self.hparams.persistent_workers,
@@ -77,22 +70,22 @@ class DonutLoader(pl.LightningDataModule):
         return self._build_loader("test", drop_last=False)
 
 
-class DavidNet(TorchDavidNet, pl.LightningModule):
-    """Pytorch Lightning wrapper for training DavidNet."""
+class WaveNet(TorchWaveNet, pl.LightningModule):
+    """Pytorch Lightning wrapper for WaveNet."""
 
-    def __init__(self, n_meta_layers: int = 3, input_shape: int = 256) -> None:
-        """Create the DavidNet.
+    def __init__(self, n_meta_layers: int = 3) -> None:
+        """Create the WaveNet.
 
         Parameters
         ----------
         n_meta_layers: int, default=3
-            Number of layers in the MetaNet inside the DavidNet. These
+            Number of layers in the MetaNet inside the WaveNet. These
             are the linear layers that map image features plus field
             position to Zernike coefficients.
         """
-        # set up the DavidNet implemented in torch,
+        # set up the WaveNet implemented in torch,
         # as well as the LightningModule boilerplate
-        super().__init__(n_meta_layers=n_meta_layers, input_shape=input_shape)
+        super().__init__(n_meta_layers=n_meta_layers)
 
         # save the hyperparams in the log
         self.save_hyperparameters()
@@ -152,58 +145,51 @@ class DavidNet(TorchDavidNet, pl.LightningModule):
             wandb.log({"zernikes": fig, "global_step": self.trainer.global_step})
             del fig
 
-        """# calculate distance from the center of focal plane in meters
-        x = batch["focal_x"]
-        y = batch["focal_y"]
-        dist_rads = torch.sqrt(x ** 2 + y ** 2)  # distance in radians
-        dist_arcsecs = dist_rads * 206_265  # distance in arcsecs
-        dist_microns = dist_arcsecs * 5  # distance in microns
-        dist_meters = dist_microns / 1e6
-
-        # get the fraction blended
-        frac_blended = batch["fraction_blended"]
-
-        val_outputs = torch.hstack((dist_meters, frac_blended, mse))"""
-
         val_outputs = mse
 
         return val_outputs
 
     def validation_epoch_end(self, val_outputs: torch.Tensor) -> None:
         """Compute metrics for the whole validation epoch."""
-        """ # extract the validation outputs
-        val_outputs = torch.stack(val_outputs).reshape(-1, 3)
-        frac_blended = val_outputs[:, 1]
-        mse = val_outputs[:, 2]
-
-        # compute the validation loss for the unblended stars
-        unblended_idx = torch.where(frac_blended < 0.01)
-        self.log("val_rmse_unblended", torch.sqrt(mse[unblended_idx]).mean())
-        self.log("val_loss_unblended", mse[unblended_idx].mean())
-
-        # compute the validation loss for the blended stars
-        blended_idx = torch.where(frac_blended >= 0.01)
-        self.log("val_rmse_blended", torch.sqrt(mse[blended_idx]).mean())
-        self.log("val_loss_blended", mse[blended_idx].mean())"""
 
         mse = torch.stack(val_outputs)
         self.log("val_loss", mse.mean())
         self.log("val_rmse", torch.sqrt(mse).mean())
 
+    @torch.jit.export
+    def tswep_predict(
+        self,
+        img: torch.Tensor,
+        fx: torch.Tensor,
+        fy: torch.Tensor,
+        focalFlag: torch.Tensor,
+    ) -> torch.Tensor:
+        """Predict Zernikes for a CompensableImage from ts_wep.
 
-def calc_mse(pred: torch.Tensor, true: torch.Tensor) -> torch.Tensor:
-    """Calculate the MSE for the predicted values.
+        Parameters
+        ----------
+        img: torch.Tensor
+            The donut image
+        fx: torch.Tensor
+            x-axis field angle, in degrees
+        fy: torch.Tensor
+            y-axis field angle, in degrees
+        focalFlag: torch.Tensor
+            Float indicating whether the donut is intra (1.) or extra (2.) focal
 
-    Parameters
-    ----------
-    pred: torch.Tensor
-        Array of predicted values
-    true: torch.Tensor
-        Array of true values
+        Returns
+        -------
+        torch.Tensor
+            Tensor of Zernike coefficients
+        """
+        # convert the field angles to radians
+        fx = torch.deg2rad(fx)
+        fy = torch.deg2rad(fy)
 
-    Returns
-    -------
-    torch.Tensor
-        Array of MSE values
-    """
-    return torch.mean((pred - true) ** 2, axis=1, keepdim=True)
+        # predict the zernikes in microns
+        z_pred = self(img, fx, fy, focalFlag)
+
+        # convert from microns to nanometers
+        z_pred *= 1e3
+
+        return z_pred

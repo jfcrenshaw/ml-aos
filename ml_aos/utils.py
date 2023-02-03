@@ -1,28 +1,27 @@
 """Utility functions."""
-import numpy as np
-import numpy.typing as npt
+import torch
 
 
 def convert_zernikes(
-    zernikes: npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]:
+    zernikes: torch.Tensor,
+) -> torch.Tensor:
     """Convert zernike units from wavelengths to quadrature contribution to FWHM.
 
     Parameters
     ----------
-    zernikes: np.ndarray
-        Array of zernike coefficients in microns.
+    zernikes: torch.Tensor
+        Tensor of zernike coefficients in microns.
 
     Returns
     -------
-    np.ndarray
+    torch.Tensor
         Zernike coefficients in units of quadrature contribution to FWHM.
     """
     # these conversion factors depend on telescope radius and obscuration
     # the numbers below are for the Rubin telescope; different numbers
     # are needed for Auxtel. For calculating these factors, see ts_phosim
-    arcsec_per_micron = np.array(
-        [  # type: ignore
+    arcsec_per_micron = zernikes.new(
+        [
             0.751,  # Z4
             0.271,  # Z5
             0.271,  # Z6
@@ -46,3 +45,21 @@ def convert_zernikes(
     )
 
     return zernikes * arcsec_per_micron
+
+
+def calc_mse(pred: torch.Tensor, true: torch.Tensor) -> torch.Tensor:
+    """Calculate the MSE for the predicted values.
+
+    Parameters
+    ----------
+    pred: torch.Tensor
+        Array of predicted values
+    true: torch.Tensor
+        Array of true values
+
+    Returns
+    -------
+    torch.Tensor
+        Array of MSE values
+    """
+    return torch.mean(convert_zernikes(pred - true) ** 2, axis=1, keepdim=True)

@@ -1,10 +1,10 @@
-"""Script for running DavidNet from the command line using Lightning CLI."""
+"""Script for running WaveNet from the command line using Lightning CLI."""
 import os
 
 import pytorch_lightning as pl
 from pytorch_lightning.cli import LightningCLI
 
-from ml_aos.lightning import DavidNet, DonutLoader
+from ml_aos.lightning import WaveNet, DonutLoader
 
 if __name__ == "__main__":
 
@@ -21,7 +21,7 @@ if __name__ == "__main__":
 
     # setup the CLI
     cli = LightningCLI(
-        DavidNet,
+        WaveNet,
         DonutLoader,
         trainer_defaults={"logger": wandb_logger},
     )
