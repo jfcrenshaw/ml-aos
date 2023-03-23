@@ -3,7 +3,7 @@
 Based on code written by David Thomas for his PhD Thesis at Stanford.
 """
 import glob
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import torch
@@ -20,8 +20,8 @@ class Donuts(Dataset):
         self,
         mode: str = "train",
         convert_zernikes: bool = False,
-        nval: int = 256,
-        ntest: int = 2 ** 15,
+        nval: int = 2048,
+        ntest: int = 2048,
         data_dir: str = "/astro/store/epyc/users/jfc20/aos_sims",
         **kwargs: Any,
     ) -> None:
@@ -90,7 +90,7 @@ class Donuts(Dataset):
         """Return length of this Dataset."""
         return len(self._image_files)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         """Return simulation corresponding to the index.
 
         Parameters
@@ -107,7 +107,7 @@ class Donuts(Dataset):
                 field_x, field_y: the field angle in radians
                 detector_x, detector_y: position on the detector in pixels
                 intrafocal: boolean flag. 0 = extrafocal, 1 = intrafocal
-                zernikes: Noll zernikes coefficients 4-21, inclusive
+                zernikes: Noll zernikes coefficients 4-21, inclusive (microns)
                 n_blends: the number of blending stars in the image
                 fraction_blended: fraction of the central donut blended
                 pointing: the pointing ID
@@ -117,9 +117,6 @@ class Donuts(Dataset):
 
         # load the image
         img = np.load(img_file)
-
-        # reshape the images so they have a channel index
-        img = img[None, :, :]
 
         # get the IDs
         pntId, obsId, objId = img_file.split("/")[-1].split(".")[:3]
@@ -161,6 +158,7 @@ class Donuts(Dataset):
             "field_y": torch.FloatTensor([fy]),
             "intrafocal": torch.FloatTensor([intra]),
             "zernikes": torch.from_numpy(zernikes).float(),
+            "dof": torch.from_numpy(dof).float(),
             "pntId": int(pntId[3:]),
             "obsId": int(obsId[3:]),
             "objId": int(objId[3:]),

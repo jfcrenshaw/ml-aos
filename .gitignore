@@ -143,3 +143,6 @@ wandb
 
 # the data directory
 data/
+
+# lightning logs
+lightning_logs/

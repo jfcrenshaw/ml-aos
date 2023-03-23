@@ -1603,6 +1603,14 @@ python-versions = ">=3.7.0"
 wcwidth = "*"
 
 [[package]]
+name = "protobuf"
+version = "3.20.3"
+description = "Protocol Buffers"
+category = "main"
+optional = false
+python-versions = ">=3.7"
+
+[[package]]
 name = "psutil"
 version = "5.9.4"
 description = "Cross-platform lib for process and system monitoring in Python."
@@ -1936,6 +1944,19 @@ python-versions = ">=3.8"
 mpmath = ">=0.19"
 
 [[package]]
+name = "tensorboardx"
+version = "2.6"
+description = "TensorBoardX lets you watch Tensors Flow without Tensorflow"
+category = "main"
+optional = false
+python-versions = "*"
+
+[package.dependencies]
+numpy = "*"
+packaging = "*"
+protobuf = ">=3.8.0,<4"
+
+[[package]]
 name = "terminado"
 version = "0.17.1"
 description = "Tornado websocket backend for the Xterm.js Javascript terminal emulator library."
@@ -2224,7 +2245,7 @@ test = ["mypy", "pre-commit", "pytest", "pytest-asyncio", "websockets (>=10.0)"]
 [metadata]
 lock-version = "1.1"
 python-versions = ">=3.10,<3.11"
-content-hash = "5447c0a9177180859129d4b5174400267dd48bccc0178a276eac0923b97f20d7"
+content-hash = "8603499eec06704f33862a9ce0c92e44ce524e90a02cfa04c2b94541c1af0411"
 
 [metadata.files]
 aiofiles = []
@@ -2431,6 +2452,7 @@ platformdirs = []
 pre-commit = []
 prometheus-client = []
 prompt-toolkit = []
+protobuf = []
 psutil = []
 ptyprocess = [
     {file = "ptyprocess-0.7.0-py2.py3-none-any.whl", hash = "sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35"},
@@ -2519,6 +2541,7 @@ snowballstemmer = [
 soupsieve = []
 stack-data = []
 sympy = []
+tensorboardx = []
 terminado = []
 tinycss2 = []
 tomli = [
