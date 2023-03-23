@@ -63,3 +63,26 @@ def calc_mse(pred: torch.Tensor, true: torch.Tensor) -> torch.Tensor:
         Array of MSE values
     """
     return torch.mean(convert_zernikes(pred - true) ** 2, axis=1, keepdim=True)
+
+
+def count_parameters(model: torch.nn.Module, trainable: bool = True) -> int:
+    """Count the number of parameters in the model.
+
+    Parameters
+    ----------
+    model: torch.nn.Module
+        The Pytorch model to count parameters for
+    trainable: bool, default=True
+        If True, only counts trainable parameters
+
+    Returns
+    -------
+    int
+        The number of trainable parameters
+    """
+    if trainable:
+        return sum(
+            params.numel() for params in model.parameters() if params.requires_grad
+        )
+    else:
+        return sum(params.numel() for params in model.parameters())
