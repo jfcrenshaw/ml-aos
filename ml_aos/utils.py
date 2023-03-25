@@ -51,24 +51,6 @@ def convert_zernikes(
     return zernikes * arcsec_per_micron
 
 
-def calc_mse(pred: torch.Tensor, true: torch.Tensor) -> torch.Tensor:
-    """Calculate the MSE for the predicted values.
-
-    Parameters
-    ----------
-    pred: torch.Tensor
-        Array of predicted values
-    true: torch.Tensor
-        Array of true values
-
-    Returns
-    -------
-    torch.Tensor
-        Array of MSE values
-    """
-    return torch.mean(convert_zernikes(pred - true) ** 2, axis=1, keepdim=True)
-
-
 def plot_zernikes(z_pred: torch.Tensor, z_true: torch.Tensor) -> plt.Figure:
     """Plot true and predicted zernikes (up to 8).
 
@@ -154,3 +136,104 @@ def printOnce(msg: str, header: bool = False) -> None:
         if header:
             msg = f"\n{msg}\n{'-'*len(msg)}\n"
         print(msg)
+
+
+def get_corner(fx: float, fy: float) -> int:
+    """Maps a field position to a corner number.
+
+    Parameters
+    ----------
+    fx: float
+        X angle of source with respect to optic axis (radians)
+    fy: float
+        Y angle of source with respect to optic axis (radians)
+
+    Returns
+    -------
+    int
+        Corner number. Top right corner is zero, increasing counter-clockwise
+
+    """
+    # determine which corner we are in
+    if fx > 0 and fy > 0:
+        corner = 0
+    elif fx < 0 and fy > 0:
+        corner = 1
+    elif fx < 0 and fy < 0:
+        corner = 2
+    else:
+        corner = 3
+
+    return corner
+
+
+def transform_inputs(
+    image: torch.Tensor,
+    fx: torch.Tensor,
+    fy: torch.Tensor,
+    intra: torch.Tensor,
+    wavelen: torch.Tensor,
+) -> tuple:
+    """Transform the inputs to the neural network.
+
+    Parameters
+    ----------
+    image: torch.Tensor
+        The donut image
+    fx: torch.Tensor
+        X angle of source with respect to optic axis (radians)
+    fy: torch.Tensor
+        Y angle of source with respect to optic axis (radians)
+    intra: torch.Tensor
+        Boolean indicating whether the donut is intra or extra focal
+    wavelen: torch.Tensor
+        Effective wavelength of observation in microns.
+
+    Returns
+    -------
+    Tuple[torch.Tensor x 5]
+        same as above, with transformations applied
+    torch.Tensor
+        One-hot-encoding of the corner
+    """
+    # create a one-hot-encoding for the corner
+    corner = get_corner(fx, fy)
+    corner_one_hot = torch.zeros(4)
+    corner_one_hot[corner] = 1
+
+    # take absolute value of the angles
+    fx, fy = torch.abs(fx), torch.abs(fy)
+
+    # for odd corners, swap fx and fy
+    if corner in [1, 3]:
+        fx, fy = fy, fx
+
+    # normalize angles
+    field_mean = 0.021
+    field_std = 0.001
+    fx = (fx - field_mean) / field_std
+    fy = (fy - field_mean) / field_std
+
+    # rotate the image to corner 0
+    image = torch.rot90(image, corner)
+
+    # rescale image to [0, 1]
+    image -= image.min()
+    image /= image.max()
+
+    # normalize image
+    image_mean = 0.347
+    image_std = 0.226
+    image = (image - image_mean) / image_std
+
+    # normalize the intrafocal flags
+    intra_mean = 0.5
+    intra_std = 0.5
+    intra = (intra - intra_mean) / intra_std
+
+    # normalize the wavelength
+    wavelen_mean = 0.710
+    wavelen_std = 0.174
+    wavelen = (wavelen - wavelen_mean) / wavelen_std
+
+    return image, fx, fy, intra, wavelen, corner_one_hot

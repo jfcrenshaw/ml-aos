@@ -10,7 +10,7 @@ import torch
 from astropy.table import Table
 from torch.utils.data import Dataset
 
-from ml_aos.utils import convert_zernikes
+from ml_aos.utils import get_corner, transform_inputs
 
 
 class Donuts(Dataset):
@@ -19,10 +19,11 @@ class Donuts(Dataset):
     def __init__(
         self,
         mode: str = "train",
-        convert_zernikes: bool = False,
-        nval: int = 2048,
-        ntest: int = 2048,
+        transform: bool = True,
+        nval: int = 2**12,
+        ntest: int = 2**12,
         data_dir: str = "/astro/store/epyc/users/jfc20/aos_sims",
+        seed: int = 0,
         **kwargs: Any,
     ) -> None:
         """Load the simulated AOS donuts and zernikes in a Pytorch Dataset.
@@ -32,9 +33,8 @@ class Donuts(Dataset):
         mode: str, default="train"
             Which set to load. Options are train, val (i.e. validation),
             or test.
-        convert_zernikes: bool, default=False
-            Whether to convert Zernike coefficients from units of r band
-            wavelength to quadrature contribution to PSF FWHM.
+        transform: bool, default=True
+            Whether to apply transform_inputs from ml_aos.utils.
         nval: int, default=256
             Number of donuts in the validation set.
         ntest: int, default=2048
@@ -42,15 +42,21 @@ class Donuts(Dataset):
         data_dir: str, default=/astro/store/epyc/users/jfc20/aos_sims
             Location of the data directory. The default location is where
             I stored the simulations on epyc.
+        seed: int, default = 0
+            Random seed for shuffling the data files.
         """
         # save the settings
         self.settings = {
-            "convert_zernikes": convert_zernikes,
+            "transform": transform,
             "data_dir": data_dir,
         }
 
         # get the image files
         image_files = glob.glob(f"{data_dir}/images/*")
+
+        # shuffle the image files
+        # rng = np.random.default_rng(seed)
+        # rng.shuffle(image_files)
 
         # get the test set
         test_set = image_files[-ntest:]
@@ -103,14 +109,14 @@ class Donuts(Dataset):
         dict
             The dictionary contains the following pytorch tensors
                 image: donut image, shape=(256, 256)
-                mask: donut mask, shape=(256, 256)
                 field_x, field_y: the field angle in radians
-                detector_x, detector_y: position on the detector in pixels
                 intrafocal: boolean flag. 0 = extrafocal, 1 = intrafocal
+                band: LSST band indicated by index in string "ugrizy" (e.g. 2 = "r")
                 zernikes: Noll zernikes coefficients 4-21, inclusive (microns)
-                n_blends: the number of blending stars in the image
-                fraction_blended: fraction of the central donut blended
-                pointing: the pointing ID
+                dof: the telescope perturbations corresponding to the zernikes
+                pntId: the pointing ID
+                obsID: the observation ID
+                objID: the object ID
         """
         # get the image file
         img_file = self._image_files[idx]
@@ -125,7 +131,6 @@ class Donuts(Dataset):
         catalog = Table.read(
             f"{self.settings['data_dir']}/catalogs/{pntId}.catalog.parquet"
         )
-        self.catalog = catalog
 
         # get the row for this source
         row = catalog[catalog["objectId"] == int(objId[3:])][0]
@@ -136,6 +141,22 @@ class Donuts(Dataset):
         # get the intra/extra flag
         intra = "SW1" in row["detector"]
 
+        # get the observed band
+        obs_row = self.observations[
+            self.observations["observationId"] == int(obsId[3:])
+        ]
+        band = obs_row["lsstFilter"].item()
+
+        # get the effective wavelength in microns
+        wavelen = {
+            "u": 0.3671,
+            "g": 0.4827,
+            "r": 0.6223,
+            "i": 0.7546,
+            "z": 0.8691,
+            "y": 0.9712,
+        }[band]
+
         # load the zernikes
         zernikes = np.load(
             (
@@ -144,21 +165,40 @@ class Donuts(Dataset):
             )
         )
 
-        # convert zernikes to their contribution to FWHM
-        if self.settings["convert_zernikes"]:
-            zernikes = convert_zernikes(zernikes)
-
         # load the degrees of freedom
         dof = np.load(f"{self.settings['data_dir']}/dof/{pntId}.dofs.npy")
 
-        pntId, obsId, objId
+        # convert everything to tensors
+        img = torch.from_numpy(img).float()
+        fx = torch.FloatTensor([fx])
+        fy = torch.FloatTensor([fy])
+        intra = torch.FloatTensor([intra])
+        wavelen = torch.FloatTensor([wavelen])
+        zernikes = torch.from_numpy(zernikes).float()
+        dof = torch.from_numpy(dof).float()
+
+        # standardize all the inputs for the neural net
+        if self.settings["transform"]:
+            img, fx, fy, intra, wavelen, corner = transform_inputs(
+                img,
+                fx,
+                fy,
+                intra,
+                wavelen,
+            )
+        else:
+            corner = torch.FloatTensor([get_corner(fx, fy)])
+
         output = {
-            "image": torch.from_numpy(img).float(),
-            "field_x": torch.FloatTensor([fx]),
-            "field_y": torch.FloatTensor([fy]),
-            "intrafocal": torch.FloatTensor([intra]),
-            "zernikes": torch.from_numpy(zernikes).float(),
-            "dof": torch.from_numpy(dof).float(),
+            "image": img,
+            "field_x": fx,
+            "field_y": fy,
+            "corner": corner,
+            "intrafocal": intra,
+            "wavelen": wavelen,
+            "zernikes": zernikes,
+            "dof": dof,
+            "band": band,
             "pntId": int(pntId[3:]),
             "obsId": int(obsId[3:]),
             "objId": int(objId[3:]),

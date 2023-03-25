@@ -4,10 +4,11 @@ from typing import Any
 
 import pytorch_lightning as pl
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from ml_aos.dataloader import Donuts
-from ml_aos.utils import calc_mse
+from ml_aos.utils import convert_zernikes
 from ml_aos.wavenet import WaveNet
 
 
@@ -26,7 +27,7 @@ class DonutLoader(pl.LightningDataModule):
 
         Parameters
         ----------
-        batch_size: int, default=64
+        batch_size: int, default=32
             The batch size for SGD.
         num_workers: int, default=16
             The number of workers for parallel loading of batches.
@@ -71,7 +72,7 @@ class DonutLoader(pl.LightningDataModule):
 class WaveNetSystem(pl.LightningModule):
     """Pytorch Lightning system for training the WaveNet."""
 
-    def __init__(self) -> None:
+    def __init__(self, lr: float = 1e-3) -> None:
         super().__init__()
         self.save_hyperparameters()
         self.wavenet = WaveNet()
@@ -83,11 +84,13 @@ class WaveNetSystem(pl.LightningModule):
         fx = batch["field_x"]
         fy = batch["field_y"]
         intra = batch["intrafocal"]
+        corner = batch["corner"]
+        wavelen = batch["wavelen"]
         zk_true = batch["zernikes"]
         dof_true = batch["dof"]  # noqa: F841
 
         # predict zernikes
-        zk_pred = self.wavenet(img, fx, fy, intra)
+        zk_pred = self.wavenet(img, fx, fy, intra, corner, wavelen)
 
         return zk_pred, zk_true
 
@@ -95,6 +98,11 @@ class WaveNetSystem(pl.LightningModule):
         self,
     ) -> None:
         """Predict zernikes for production."""
+        # need to take the original image, field angles, intra flag, corner, and band
+        # then transform these, including getting wavelength from the band
+        # then reshape the image
+        # then feed into the network
+        # then make sure the output units are what we want.
         pass
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
@@ -102,9 +110,12 @@ class WaveNetSystem(pl.LightningModule):
         # predict
         zk_pred, zk_true = self.predict_step(batch)
 
+        # convert to FWHM contributions
+        zk_pred = convert_zernikes(zk_pred)
+        zk_true = convert_zernikes(zk_true)
+
         # calculate loss
-        mse = calc_mse(zk_pred, zk_true)
-        loss = mse.mean()
+        loss = F.mse_loss(zk_pred, zk_true)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
 
         return loss
@@ -114,14 +125,17 @@ class WaveNetSystem(pl.LightningModule):
         # predict
         zk_pred, zk_true = self.predict_step(batch)
 
+        # convert to FWHM contributions
+        zk_pred = convert_zernikes(zk_pred)
+        zk_true = convert_zernikes(zk_true)
+
         # calculate loss
-        mse = calc_mse(zk_pred, zk_true)
-        loss = mse.mean()
+        loss = F.mse_loss(zk_pred, zk_true)
         self.log("val_loss", loss, sync_dist=True, prog_bar=True)
 
         return loss
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """Configure the optimizer."""
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-2)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
         return optimizer
