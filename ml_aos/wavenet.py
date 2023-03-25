@@ -2,7 +2,7 @@
 
 import torch
 from torch import nn
-from torchvision import models
+from torchvision import models as cnn_models
 
 
 class MetaNet(nn.Module):
@@ -20,7 +20,7 @@ class MetaNet(nn.Module):
         """
         super().__init__()
 
-        # add the very first layer
+        # start with the very first layer
         layers = [
             nn.Linear(8, n_nodes),
             nn.BatchNorm1d(n_nodes),
@@ -50,15 +50,26 @@ class MetaNet(nn.Module):
 class WaveNet(nn.Module):
     """Transfer learning driven WaveNet."""
 
-    def __init__(self, n_meta_layers: int = 2, n_meta_nodes: int = 16) -> None:
+    def __init__(
+        self,
+        cnn_model: str = "resnet18",
+        n_meta_layers: int = 2,
+        n_meta_nodes: int = 16,
+        n_predictor_layers: tuple = (256,),
+    ) -> None:
         """Create the WaveNet.
 
         Parameters
         ----------
-        n_meta_layers : int, default=2
+        cnn_model: str, default="resnet18"
+            The name of the pre-trained CNN model from torchvision.
+        n_meta_layers: int, default=2
             Number of layers in the MetaNet, including the output layer.
-        n_meta_nodes : int, default=16
+        n_meta_nodes: int, default=16
             Number of nodes in each layer of the MetaNet.
+        n_predictor_layers: tuple, default=(256)
+            Number of nodes in the hidden layers of the Zernike predictor network.
+            This does not include the output layer, which is fixed to 19.
         """
         super().__init__()
 
@@ -66,8 +77,8 @@ class WaveNet(nn.Module):
         # the MachineLearningAlgorithm in ts_wep
         self.camType = "LsstCam"
 
-        # load CNN
-        self.cnn = models.resnet18(weights="DEFAULT")
+        # load the CNN
+        self.cnn = getattr(cnn_models, cnn_model)(weights="DEFAULT")
 
         # save the number of cnn features
         self.n_cnn_features = self.cnn.fc.in_features
@@ -85,12 +96,30 @@ class WaveNet(nn.Module):
 
         # create linear layers that predict zernikes
         n_features = self.n_cnn_features + self.meta_net.layers[-1].num_features
-        self.predictor = nn.Sequential(
-            nn.Linear(n_features, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Linear(256, 19),
-        )
+
+        if len(n_predictor_layers) > 0:
+            # start with the very first layer
+            layers = [
+                nn.Linear(n_features, n_predictor_layers[0]),
+                nn.BatchNorm1d(n_predictor_layers[0]),
+                nn.ReLU(),
+            ]
+
+            # add any additional layers
+            for i in range(1, len(n_predictor_layers)):
+                layers += [
+                    nn.Linear(n_predictor_layers[i - 1], n_predictor_layers[i]),
+                    nn.BatchNorm1d(n_predictor_layers[i]),
+                    nn.ReLU(),
+                ]
+
+            # add the final layer
+            layers += [nn.Linear(n_predictor_layers[-1], 19)]
+
+        else:
+            layers = [nn.Linear(n_features, 19)]
+
+        self.predictor = nn.Sequential(*layers)
 
     @staticmethod
     def _reshape_image(image: torch.Tensor) -> torch.Tensor:

@@ -1,7 +1,4 @@
-"""Pytorch DataSet for the AOS simulations.
-
-Based on code written by David Thomas for his PhD Thesis at Stanford.
-"""
+"""Pytorch DataSet for the AOS simulations."""
 import glob
 from typing import Any
 
@@ -20,8 +17,8 @@ class Donuts(Dataset):
         self,
         mode: str = "train",
         transform: bool = True,
-        nval: int = 2**12,
-        ntest: int = 2**12,
+        fval: float = 0.1,
+        ftest: float = 0.1,
         data_dir: str = "/astro/store/epyc/users/jfc20/aos_sims",
         seed: int = 0,
         **kwargs: Any,
@@ -35,10 +32,10 @@ class Donuts(Dataset):
             or test.
         transform: bool, default=True
             Whether to apply transform_inputs from ml_aos.utils.
-        nval: int, default=256
-            Number of donuts in the validation set.
-        ntest: int, default=2048
-            Number of donuts in the test set
+        fval: float, default=0.1
+            Fraction of pointings in the validation set
+        ftest: float, default=2048
+            Fraction of pointings in the test set
         data_dir: str, default=/astro/store/epyc/users/jfc20/aos_sims
             Location of the data directory. The default location is where
             I stored the simulations on epyc.
@@ -47,54 +44,52 @@ class Donuts(Dataset):
         """
         # save the settings
         self.settings = {
+            "mode": mode,
             "transform": transform,
             "data_dir": data_dir,
+            "fval": fval,
+            "ftest": ftest,
+            "data_dir": data_dir,
+            "seed": seed,
         }
 
-        # get the image files
-        image_files = glob.glob(f"{data_dir}/images/*")
-
-        # shuffle the image files
-        # rng = np.random.default_rng(seed)
-        # rng.shuffle(image_files)
-
-        # get the test set
-        test_set = image_files[-ntest:]
-        testIds = list(set([file.split("/")[-1].split(".")[0] for file in test_set]))
-
-        # remove the non-test set images that were in the same observation as a test
-        # set image (because they have the same perturbations)
-        rest = [
-            file
-            for file in image_files
-            if not any(testId in file for testId in testIds)
+        # get a list of all the pointings, and shuffle
+        pointings = [
+            file.split("/")[-1].split(".")[0] for file in glob.glob(f"{data_dir}/dof/*")
         ]
+        rng = np.random.default_rng(seed)
+        rng.shuffle(pointings)
 
-        # get the validation set
-        val_set = rest[-nval:]
-        valIds = list(set([file.split("/")[-1].split(".")[0] for file in val_set]))
+        # separate the list of train, validation, and test pointings
+        frac_val = 0.1
+        frac_test = 0.1
+        n_val = int(frac_val * len(pointings))
+        n_test = int(frac_test * len(pointings))
 
-        # remove the non-validation set images that were in the same observation as a
-        # validation set image (because they have the same perturbations)
-        rest = [file for file in rest if not any(valId in file for valId in valIds)]
+        self.pointings = {
+            "train": pointings[n_val + n_test :],
+            "val": pointings[:n_val],
+            "test": pointings[n_val : n_val + n_test],
+        }
 
-        # the rest of the files will be used for training
-        train_set = rest
-
-        # set the image files to the requested set
-        if mode == "train":
-            self._image_files = train_set
-        elif mode == "val":
-            self._image_files = val_set
-        elif mode == "test":
-            self._image_files = test_set
+        # partition the image files
+        all_image_files = glob.glob(f"{data_dir}/images/*")
+        rng.shuffle(all_image_files)
+        self.image_files = {
+            mode: [
+                file
+                for file in all_image_files
+                if file.split("/")[-1].split(".")[0] in pntgs
+            ]
+            for mode, pntgs in self.pointings.items()
+        }
 
         # get the table of metadata for each observation
         self.observations = Table.read(f"{data_dir}/opSimTable.parquet")
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
-        return len(self._image_files)
+        return len(self.image_files[self.settings["mode"]])  # type: ignore
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         """Return simulation corresponding to the index.
@@ -119,7 +114,7 @@ class Donuts(Dataset):
                 objID: the object ID
         """
         # get the image file
-        img_file = self._image_files[idx]
+        img_file = self.image_files[self.settings["mode"]][idx]  # type: ignore
 
         # load the image
         img = np.load(img_file)

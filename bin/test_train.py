@@ -8,7 +8,7 @@ from ml_aos.utils import printOnce
 printOnce("fast dev run", header=True)
 pl.seed_everything(42, workers=True)
 trainer = pl.Trainer(fast_dev_run=True, deterministic=True)
-trainer.fit(model=WaveNetSystem(), train_dataloaders=DonutLoader())
+trainer.fit(model=WaveNetSystem(), train_dataloaders=DonutLoader(shuffle=False))
 
 # next we will overfit a single batch
 printOnce("overfit single batch", header=True)
@@ -21,4 +21,4 @@ trainer = pl.Trainer(
     callbacks=[pl.callbacks.EarlyStopping("val_loss", patience=20)],
     logger=pl.loggers.TensorBoardLogger(save_dir="lightning_logs", name="overfit_test"),
 )
-trainer.fit(model=WaveNetSystem(lr=1e-2), train_dataloaders=DonutLoader())
+trainer.fit(model=WaveNetSystem(lr=1e-2), train_dataloaders=DonutLoader(shuffle=False))
