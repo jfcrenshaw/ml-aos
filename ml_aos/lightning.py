@@ -27,7 +27,7 @@ class DonutLoader(pl.LightningDataModule):
 
         Parameters
         ----------
-        batch_size: int, default=32
+        batch_size: int, default=64
             The batch size for SGD.
         num_workers: int, default=16
             The number of workers for parallel loading of batches.
