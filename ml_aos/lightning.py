@@ -83,6 +83,7 @@ class WaveNetSystem(pl.LightningModule):
         n_meta_nodes: int = 16,
         n_predictor_layers: tuple = (256,),
         lr: float = 1e-3,
+        lr_schedule: bool = False,
     ) -> None:
         """Create the WaveNet.
 
@@ -99,6 +100,8 @@ class WaveNetSystem(pl.LightningModule):
             This does not include the output layer, which is fixed to 19.
         lr: float, default=1e-3
             The initial learning rate for Adam.
+        lr_schedule: bool, default=True
+            Whether to use the ReduceLROnPlateau learning rate scheduler.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -159,15 +162,18 @@ class WaveNetSystem(pl.LightningModule):
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """Configure the optimizer."""
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": ReduceLROnPlateau(optimizer),
-                "monitor": "val_loss",
-                "frequency": 1,
-            },
-        }
-        return optimizer
+
+        if self.hparams.lr_schedule:
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": ReduceLROnPlateau(optimizer),
+                    "monitor": "val_loss",
+                    "frequency": 1,
+                },
+            }
+        else:
+            return optimizer
 
     def forward(
         self,

@@ -20,21 +20,26 @@ class MetaNet(nn.Module):
         """
         super().__init__()
 
-        # start with the very first layer
-        layers = [
-            nn.Linear(8, n_nodes),
-            nn.BatchNorm1d(n_nodes),
-        ]
+        # if no layers, just identity
+        if n_layers == 0:
+            self.layers = nn.Identity()
 
-        # add any additional layers
-        for _ in range(n_layers - 1):
-            layers += [
-                nn.ReLU(),
-                nn.Linear(n_nodes, n_nodes),
+        else:
+            # start with the very first layer
+            layers = [
+                nn.Linear(8, n_nodes),
                 nn.BatchNorm1d(n_nodes),
             ]
 
-        self.layers = nn.Sequential(*layers)
+            # add any additional layers
+            for _ in range(n_layers - 1):
+                layers += [
+                    nn.ReLU(),
+                    nn.Linear(n_nodes, n_nodes),
+                    nn.BatchNorm1d(n_nodes),
+                ]
+
+            self.layers = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Pass vector of metadata through the network.

@@ -16,9 +16,15 @@ pl.seed_everything(42, workers=True)
 trainer = pl.Trainer(
     overfit_batches=1,
     log_every_n_steps=1,
-    max_epochs=100,
+    max_epochs=400,
     deterministic=True,
-    callbacks=[pl.callbacks.EarlyStopping("val_loss", patience=20)],
+    callbacks=[
+        pl.callbacks.EarlyStopping("train_loss", patience=20),
+        pl.callbacks.LearningRateMonitor(),
+    ],
     logger=pl.loggers.TensorBoardLogger(save_dir="lightning_logs", name="overfit_test"),
 )
-trainer.fit(model=WaveNetSystem(lr=1e-2), train_dataloaders=DonutLoader(shuffle=False))
+trainer.fit(
+    model=WaveNetSystem(lr=1e-2, n_meta_layers=2, n_meta_nodes=32),
+    train_dataloaders=DonutLoader(batch_size=64, shuffle=False),
+)

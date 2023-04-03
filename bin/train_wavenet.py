@@ -31,4 +31,12 @@ trainer = pl.Trainer(
 # model.hparams.lr = lr_finder.suggestion()
 
 # fit!
-trainer.fit(model=WaveNetSystem(lr=0.002), train_dataloaders=DonutLoader())
+trainer.fit(
+    model=WaveNetSystem(
+        lr=0.002,
+        n_meta_layers=3,
+        n_meta_nodes=128,
+        n_predictor_layers=(256, 128, 64, 32),
+    ),
+    train_dataloaders=DonutLoader(),
+)
