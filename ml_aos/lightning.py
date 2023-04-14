@@ -79,8 +79,7 @@ class WaveNetSystem(pl.LightningModule):
     def __init__(
         self,
         cnn_model: str = "resnet18",
-        n_meta_layers: int = 2,
-        n_meta_nodes: int = 16,
+        freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
         lr: float = 1e-3,
         lr_schedule: bool = False,
@@ -91,10 +90,8 @@ class WaveNetSystem(pl.LightningModule):
         ----------
         cnn_model: str, default="resnet18"
             The name of the pre-trained CNN model from torchvision.
-        n_meta_layers: int, default=2
-            Number of layers in the MetaNet, including the output layer.
-        n_meta_nodes: int, default=16
-            Number of nodes in each layer of the MetaNet.
+        freeze_cnn: bool, default=False
+            Whether to freeze the CNN weights.
         n_predictor_layers: tuple, default=(256)
             Number of nodes in the hidden layers of the Zernike predictor network.
             This does not include the output layer, which is fixed to 19.
@@ -107,10 +104,13 @@ class WaveNetSystem(pl.LightningModule):
         self.save_hyperparameters()
         self.wavenet = WaveNet(
             cnn_model=cnn_model,
-            n_meta_layers=n_meta_layers,
-            n_meta_nodes=n_meta_nodes,
             n_predictor_layers=n_predictor_layers,
         )
+
+        # define some parameters that will be accessed by
+        # the MachineLearningAlgorithm in ts_wep
+        self.camType = "LsstCam"
+        self.inputShape = (170, 170)
 
     def predict_step(
         self, batch: dict, batch_idx: int
@@ -121,18 +121,25 @@ class WaveNetSystem(pl.LightningModule):
         fx = batch["field_x"]
         fy = batch["field_y"]
         intra = batch["intrafocal"]
-        corner = batch["corner"]
-        wavelen = batch["wavelen"]
+        band = batch["band"]
         zk_true = batch["zernikes"]
         dof_true = batch["dof"]  # noqa: F841
 
         # predict zernikes
-        zk_pred = self.wavenet(img, fx, fy, intra, corner, wavelen)
+        zk_pred = self.wavenet(img, fx, fy, intra, band)
 
         return zk_pred, zk_true
 
-    def calculate_loss(self, batch: dict, batch_idx: int) -> tuple:
-        """Predict Zernikes and calculate the loss."""
+    def calc_losses(self, batch: dict, batch_idx: int) -> tuple:
+        """Predict Zernikes and calculate the losses.
+
+        The two losses considered are:
+        - mSSE - mean of the SSE (in arcsec^2)
+        - mRSSE - mean of the root of the SSE (in arcsec)
+        where SSE = Sum of Squared Errors, and the mean is taken over the batch
+
+        The mRSSE provides an estimate of the PSF degradation.
+        """
         # predict zernikes
         zk_pred, zk_true = self.predict_step(batch, batch_idx)
 
@@ -141,23 +148,27 @@ class WaveNetSystem(pl.LightningModule):
         zk_true = convert_zernikes(zk_true)
 
         # calculate loss
-        loss = F.mse_loss(zk_pred, zk_true)
+        sse = F.mse_loss(zk_pred, zk_true, reduction="none").sum(dim=-1)
+        mSSE = sse.mean()
+        mRSSE = torch.sqrt(sse).mean()
 
-        return loss
+        return mSSE, mRSSE
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         """Execute training step on a batch."""
-        loss = self.calculate_loss(batch, batch_idx)
-        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
+        mSSE, mRSSE = self.calc_losses(batch, batch_idx)
+        self.log("train_mSSE", mSSE, sync_dist=True, prog_bar=True)
+        self.log("train_mRSSE", mRSSE, sync_dist=True)
 
-        return loss
+        return mSSE
 
     def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         """Execute validation step on a batch."""
-        loss = self.calculate_loss(batch, batch_idx)
-        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
+        mSSE, mRSSE = self.calc_losses(batch, batch_idx)
+        self.log("val_mSSE", mSSE, sync_dist=True, prog_bar=True)
+        self.log("val_mRSSE", mRSSE, sync_dist=True)
 
-        return loss
+        return mSSE
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """Configure the optimizer."""
@@ -168,7 +179,7 @@ class WaveNetSystem(pl.LightningModule):
                 "optimizer": optimizer,
                 "lr_scheduler": {
                     "scheduler": ReduceLROnPlateau(optimizer),
-                    "monitor": "val_loss",
+                    "monitor": "val_mSSE",
                     "frequency": 1,
                 },
             }
@@ -177,11 +188,60 @@ class WaveNetSystem(pl.LightningModule):
 
     def forward(
         self,
-    ) -> None:
-        """Predict zernikes for production."""
-        # need to take the original image, field angles, intra flag, corner, and band
-        # then transform these, including getting wavelength from the band
-        # then reshape the image
-        # then feed into the network
-        # then make sure the output units are what we want.
-        pass
+        img: torch.Tensor,
+        fx: torch.Tensor,
+        fy: torch.Tensor,
+        focalFlag: torch.Tensor,
+        band: torch.Tensor,
+    ) -> torch.Tensor:
+        """Predict zernikes for production.
+
+        This method assumes the inputs have NOT been previously
+        transformed by ml_aos.utils.transform_inputs.
+        """
+        # rescale image to [0, 1]
+        img -= img.min()
+        img /= img.max()
+
+        # normalize image
+        image_mean = 0.347
+        image_std = 0.226
+        img = (img - image_mean) / image_std
+
+        # convert angles to radians
+        fx *= torch.pi / 180
+        fy *= torch.pi / 180
+
+        # normalize angles
+        field_mean = 0.000
+        field_std = 0.021
+        fx = (fx - field_mean) / field_std
+        fy = (fy - field_mean) / field_std
+
+        # normalize the intrafocal flags
+        intra_mean = 0.5
+        intra_std = 0.5
+        focalFlag = (focalFlag - intra_mean) / intra_std
+
+        # get the effective wavelength in microns
+        band = {
+            0: torch.FloatTensor([[0.3671]]),
+            1: torch.FloatTensor([[0.4827]]),
+            2: torch.FloatTensor([[0.6223]]),
+            3: torch.FloatTensor([[0.7546]]),
+            4: torch.FloatTensor([[0.8691]]),
+            5: torch.FloatTensor([[0.9712]]),
+        }[band.item()]
+
+        # normalize the wavelength
+        band_mean = 0.710
+        band_std = 0.174
+        band = (band - band_mean) / band_std
+
+        # predict zernikes in microns
+        zk_pred = self.wavenet(img, fx, fy, focalFlag, band)
+
+        # convert to nanometers
+        zk_pred *= 1_000
+
+        return zk_pred

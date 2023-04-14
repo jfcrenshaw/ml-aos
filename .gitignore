@@ -146,3 +146,5 @@ data/
 
 # lightning logs
 lightning_logs/
+
+models/

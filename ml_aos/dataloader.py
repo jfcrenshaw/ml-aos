@@ -7,7 +7,7 @@ import torch
 from astropy.table import Table
 from torch.utils.data import Dataset
 
-from ml_aos.utils import get_corner, transform_inputs
+from ml_aos.utils import transform_inputs
 
 
 class Donuts(Dataset):
@@ -140,17 +140,7 @@ class Donuts(Dataset):
         obs_row = self.observations[
             self.observations["observationId"] == int(obsId[3:])
         ]
-        band = obs_row["lsstFilter"].item()
-
-        # get the effective wavelength in microns
-        wavelen = {
-            "u": 0.3671,
-            "g": 0.4827,
-            "r": 0.6223,
-            "i": 0.7546,
-            "z": 0.8691,
-            "y": 0.9712,
-        }[band]
+        band = "ugrizy".index(obs_row["lsstFilter"].item())
 
         # load the zernikes
         zernikes = np.load(
@@ -163,37 +153,33 @@ class Donuts(Dataset):
         # load the degrees of freedom
         dof = np.load(f"{self.settings['data_dir']}/dof/{pntId}.dofs.npy")
 
+        # standardize all the inputs for the neural net
+        if self.settings["transform"]:
+            img, fx, fy, intra, band = transform_inputs(
+                img,
+                fx,
+                fy,
+                intra,
+                band,
+            )
+
         # convert everything to tensors
         img = torch.from_numpy(img).float()
         fx = torch.FloatTensor([fx])
         fy = torch.FloatTensor([fy])
         intra = torch.FloatTensor([intra])
-        wavelen = torch.FloatTensor([wavelen])
+        band = torch.FloatTensor([band])
         zernikes = torch.from_numpy(zernikes).float()
         dof = torch.from_numpy(dof).float()
-
-        # standardize all the inputs for the neural net
-        if self.settings["transform"]:
-            img, fx, fy, intra, wavelen, corner = transform_inputs(
-                img,
-                fx,
-                fy,
-                intra,
-                wavelen,
-            )
-        else:
-            corner = torch.FloatTensor([get_corner(fx, fy)])
 
         output = {
             "image": img,
             "field_x": fx,
             "field_y": fy,
-            "corner": corner,
             "intrafocal": intra,
-            "wavelen": wavelen,
+            "band": band,
             "zernikes": zernikes,
             "dof": dof,
-            "band": band,
             "pntId": int(pntId[3:]),
             "obsId": int(obsId[3:]),
             "objId": int(objId[3:]),

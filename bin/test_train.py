@@ -25,6 +25,6 @@ trainer = pl.Trainer(
     logger=pl.loggers.TensorBoardLogger(save_dir="lightning_logs", name="overfit_test"),
 )
 trainer.fit(
-    model=WaveNetSystem(lr=1e-2, n_meta_layers=2, n_meta_nodes=32),
-    train_dataloaders=DonutLoader(batch_size=64, shuffle=False),
+    model=WaveNetSystem(lr=1e-2),
+    train_dataloaders=DonutLoader(shuffle=False),
 )

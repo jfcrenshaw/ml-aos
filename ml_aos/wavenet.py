@@ -5,61 +5,13 @@ from torch import nn
 from torchvision import models as cnn_models
 
 
-class MetaNet(nn.Module):
-    """Network to transform the metadata."""
-
-    def __init__(self, n_layers: int = 2, n_nodes: int = 16) -> None:
-        """Create the MetaNet.
-
-        Parameters
-        ----------
-        n_layers : int, default=2
-            Number of layers in the MetaNet, including the output layer.
-        n_nodes : int, default=16
-            Number of nodes in each layer.
-        """
-        super().__init__()
-
-        # if no layers, just identity
-        if n_layers == 0:
-            self.layers = nn.Identity()
-
-        else:
-            # start with the very first layer
-            layers = [
-                nn.Linear(8, n_nodes),
-                nn.BatchNorm1d(n_nodes),
-            ]
-
-            # add any additional layers
-            for _ in range(n_layers - 1):
-                layers += [
-                    nn.ReLU(),
-                    nn.Linear(n_nodes, n_nodes),
-                    nn.BatchNorm1d(n_nodes),
-                ]
-
-            self.layers = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Pass vector of metadata through the network.
-
-        Parameters
-        ----------
-        x: torch.Tensor
-            Vector of 8 metadata variables.
-        """
-        return self.layers(x)
-
-
 class WaveNet(nn.Module):
     """Transfer learning driven WaveNet."""
 
     def __init__(
         self,
         cnn_model: str = "resnet18",
-        n_meta_layers: int = 2,
-        n_meta_nodes: int = 16,
+        freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
     ) -> None:
         """Create the WaveNet.
@@ -68,39 +20,35 @@ class WaveNet(nn.Module):
         ----------
         cnn_model: str, default="resnet18"
             The name of the pre-trained CNN model from torchvision.
-        n_meta_layers: int, default=2
-            Number of layers in the MetaNet, including the output layer.
-        n_meta_nodes: int, default=16
-            Number of nodes in each layer of the MetaNet.
+        freeze_cnn: bool, default=False
+            Whether to freeze the CNN weights.
         n_predictor_layers: tuple, default=(256)
             Number of nodes in the hidden layers of the Zernike predictor network.
             This does not include the output layer, which is fixed to 19.
         """
         super().__init__()
 
-        # first define some parameters that will be accessed by
-        # the MachineLearningAlgorithm in ts_wep
-        self.camType = "LsstCam"
-
         # load the CNN
-        self.cnn = getattr(cnn_models, cnn_model)(weights="DEFAULT")
+        if cnn_model != "davidnet":
+            self.cnn = getattr(cnn_models, cnn_model)(weights="DEFAULT")
 
-        # save the number of cnn features
-        self.n_cnn_features = self.cnn.fc.in_features
+            # save the number of cnn features
+            self.n_cnn_features = self.cnn.fc.in_features
 
-        # remove the final fully connected layer
-        self.cnn.fc = nn.Identity()
+            # remove the final fully connected layer
+            self.cnn.fc = nn.Identity()
+        else:
+            raise NotImplementedError("DavidNet not yet implemented.")
 
-        # freeze cnn parameters
-        self.cnn.eval()
-        for param in self.cnn.parameters():
-            param.requires_grad = False
-
-        # create the MetaNet
-        self.meta_net = MetaNet(n_layers=n_meta_layers, n_nodes=n_meta_nodes)
+        if freeze_cnn:
+            # freeze cnn parameters
+            self.cnn.eval()
+            for param in self.cnn.parameters():
+                param.requires_grad = False
 
         # create linear layers that predict zernikes
-        n_features = self.n_cnn_features + self.meta_net.layers[-1].num_features
+        n_meta_features = 4  # includes field_x, field_y, intra flag, wavelen
+        n_features = self.n_cnn_features + n_meta_features
 
         if len(n_predictor_layers) > 0:
             # start with the very first layer
@@ -126,14 +74,13 @@ class WaveNet(nn.Module):
 
         self.predictor = nn.Sequential(*layers)
 
-    @staticmethod
-    def _reshape_image(image: torch.Tensor) -> torch.Tensor:
+    def _reshape_image(self, image: torch.Tensor) -> torch.Tensor:
         """Add 3 identical channels to image tensor."""
         # add a channel dimension
         image = image[..., None, :, :]
 
-        # duplicate so we have 3 identical channels
-        image = image.repeat_interleave(3, dim=-3)
+        # duplicate image for each channel
+        image = image.repeat_interleave(self.cnn.conv1.in_channels, dim=-3)
 
         return image
 
@@ -143,13 +90,9 @@ class WaveNet(nn.Module):
         fx: torch.Tensor,
         fy: torch.Tensor,
         intra: torch.Tensor,
-        corner: torch.Tensor,
-        wavelen: torch.Tensor,
+        band: torch.Tensor,
     ) -> torch.Tensor:
         """Predict Zernikes from donut image, location, and wavelength.
-
-        Note most of the inputs are assumed to have been passed through
-        ml_aos.utils.transform_inputs.
 
         Parameters
         ----------
@@ -161,11 +104,8 @@ class WaveNet(nn.Module):
             Y angle of source with respect to optic axis (radians)
         intra: torch.Tensor
             Boolean indicating whether the donut is intra or extra focal
-        corner: torch.Tensor
-            The one-hot-vector corresponding to the corner where the donut is
-            located.
-        wavelen: torch.Tensor
-            Effective wavelength of the observed band.
+        band: torch.Tensor
+            Float or integer indicating which band the donut was observed in.
 
         Returns
         -------
@@ -178,12 +118,8 @@ class WaveNet(nn.Module):
         # use cnn to extract image features
         cnn_features = self.cnn(image)
 
-        # use the MetaNet to extra metadata features
-        meta_data = torch.cat([fx, fy, intra, corner, wavelen], dim=1)
-        meta_features = self.meta_net(meta_data)
-
         # predict zernikes from all features
-        features = torch.cat([cnn_features, meta_features], dim=1)
+        features = torch.cat([cnn_features, fx, fy, intra, band], dim=1)
         zernikes = self.predictor(features)
 
         return zernikes
