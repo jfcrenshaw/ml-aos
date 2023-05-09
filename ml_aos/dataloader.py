@@ -1,7 +1,4 @@
-"""Pytorch DataSet for the AOS simulations.
-
-Based on code written by David Thomas for his PhD Thesis at Stanford.
-"""
+"""Pytorch DataSet for the AOS simulations."""
 import glob
 from typing import Any, Dict
 
@@ -10,7 +7,7 @@ import torch
 from astropy.table import Table
 from torch.utils.data import Dataset
 
-from ml_aos.utils import convert_zernikes
+from ml_aos.utils import transform_inputs
 
 
 class Donuts(Dataset):
@@ -19,10 +16,11 @@ class Donuts(Dataset):
     def __init__(
         self,
         mode: str = "train",
-        convert_zernikes: bool = False,
-        nval: int = 256,
-        ntest: int = 2 ** 15,
+        transform: bool = True,
+        fval: float = 0.1,
+        ftest: float = 0.1,
         data_dir: str = "/astro/store/epyc/users/jfc20/aos_sims",
+        seed: int = 0,
         **kwargs: Any,
     ) -> None:
         """Load the simulated AOS donuts and zernikes in a Pytorch Dataset.
@@ -32,63 +30,66 @@ class Donuts(Dataset):
         mode: str, default="train"
             Which set to load. Options are train, val (i.e. validation),
             or test.
-        convert_zernikes: bool, default=False
-            Whether to convert Zernike coefficients from units of r band
-            wavelength to quadrature contribution to PSF FWHM.
-        nval: int, default=256
-            Number of donuts in the validation set.
-        ntest: int, default=2048
-            Number of donuts in the test set
+        transform: bool, default=True
+            Whether to apply transform_inputs from ml_aos.utils.
+        fval: float, default=0.1
+            Fraction of pointings in the validation set
+        ftest: float, default=2048
+            Fraction of pointings in the test set
         data_dir: str, default=/astro/store/epyc/users/jfc20/aos_sims
             Location of the data directory. The default location is where
             I stored the simulations on epyc.
+        seed: int, default = 0
+            Random seed for shuffling the data files.
         """
         # save the settings
         self.settings = {
-            "convert_zernikes": convert_zernikes,
+            "mode": mode,
+            "transform": transform,
             "data_dir": data_dir,
+            "fval": fval,
+            "ftest": ftest,
+            "data_dir": data_dir,
+            "seed": seed,
         }
 
-        # get the image files
-        image_files = glob.glob(f"{data_dir}/images/*")
-
-        # get the test set
-        test_set = image_files[-ntest:]
-        testIds = list(set([file.split("/")[-1].split(".")[0] for file in test_set]))
-
-        # remove the non-test set images that were in the same observation as a test
-        # set image (because they have the same perturbations)
-        rest = [
-            file
-            for file in image_files
-            if not any(testId in file for testId in testIds)
+        # get a list of all the pointings, and shuffle
+        pointings = [
+            file.split("/")[-1].split(".")[0] for file in glob.glob(f"{data_dir}/dof/*")
         ]
+        rng = np.random.default_rng(seed)
+        rng.shuffle(pointings)
 
-        # get the validation set
-        val_set = rest[-nval:]
-        valIds = list(set([file.split("/")[-1].split(".")[0] for file in val_set]))
+        # separate the list of train, validation, and test pointings
+        frac_val = 0.1
+        frac_test = 0.1
+        n_val = int(frac_val * len(pointings))
+        n_test = int(frac_test * len(pointings))
 
-        # remove the non-validation set images that were in the same observation as a
-        # validation set image (because they have the same perturbations)
-        rest = [file for file in rest if not any(valId in file for valId in valIds)]
+        self.pointings = {
+            "train": pointings[n_val + n_test :],
+            "val": pointings[:n_val],
+            "test": pointings[n_val : n_val + n_test],
+        }
 
-        # the rest of the files will be used for training
-        train_set = rest
-
-        # set the image files to the requested set
-        if mode == "train":
-            self._image_files = train_set
-        elif mode == "val":
-            self._image_files = val_set
-        elif mode == "test":
-            self._image_files = test_set
+        # partition the image files
+        all_image_files = glob.glob(f"{data_dir}/images/*")
+        rng.shuffle(all_image_files)
+        self.image_files = {
+            mode: [
+                file
+                for file in all_image_files
+                if file.split("/")[-1].split(".")[0] in pntgs
+            ]
+            for mode, pntgs in self.pointings.items()
+        }
 
         # get the table of metadata for each observation
         self.observations = Table.read(f"{data_dir}/opSimTable.parquet")
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
-        return len(self._image_files)
+        return len(self.image_files[self.settings["mode"]])  # type: ignore
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Return simulation corresponding to the index.
@@ -103,23 +104,20 @@ class Donuts(Dataset):
         dict
             The dictionary contains the following pytorch tensors
                 image: donut image, shape=(256, 256)
-                mask: donut mask, shape=(256, 256)
                 field_x, field_y: the field angle in radians
-                detector_x, detector_y: position on the detector in pixels
                 intrafocal: boolean flag. 0 = extrafocal, 1 = intrafocal
-                zernikes: Noll zernikes coefficients 4-21, inclusive
-                n_blends: the number of blending stars in the image
-                fraction_blended: fraction of the central donut blended
-                pointing: the pointing ID
+                band: LSST band indicated by index in string "ugrizy" (e.g. 2 = "r")
+                zernikes: Noll zernikes coefficients 4-21, inclusive (microns)
+                dof: the telescope perturbations corresponding to the zernikes
+                pntId: the pointing ID
+                obsID: the observation ID
+                objID: the object ID
         """
         # get the image file
-        img_file = self._image_files[idx]
+        img_file = self.image_files[self.settings["mode"]][idx]  # type: ignore
 
         # load the image
         img = np.load(img_file)
-
-        # reshape the images so they have a channel index
-        img = img[None, :, :]
 
         # get the IDs
         pntId, obsId, objId = img_file.split("/")[-1].split(".")[:3]
@@ -128,7 +126,6 @@ class Donuts(Dataset):
         catalog = Table.read(
             f"{self.settings['data_dir']}/catalogs/{pntId}.catalog.parquet"
         )
-        self.catalog = catalog
 
         # get the row for this source
         row = catalog[catalog["objectId"] == int(objId[3:])][0]
@@ -139,6 +136,12 @@ class Donuts(Dataset):
         # get the intra/extra flag
         intra = "SW1" in row["detector"]
 
+        # get the observed band
+        obs_row = self.observations[
+            self.observations["observationId"] == int(obsId[3:])
+        ]
+        band = "ugrizy".index(obs_row["lsstFilter"].item())
+
         # load the zernikes
         zernikes = np.load(
             (
@@ -147,20 +150,36 @@ class Donuts(Dataset):
             )
         )
 
-        # convert zernikes to their contribution to FWHM
-        if self.settings["convert_zernikes"]:
-            zernikes = convert_zernikes(zernikes)
-
         # load the degrees of freedom
         dof = np.load(f"{self.settings['data_dir']}/dof/{pntId}.dofs.npy")
 
-        pntId, obsId, objId
+        # standardize all the inputs for the neural net
+        if self.settings["transform"]:
+            img, fx, fy, intra, band = transform_inputs(
+                img,
+                fx,
+                fy,
+                intra,
+                band,
+            )
+
+        # convert everything to tensors
+        img = torch.from_numpy(img).float()
+        fx = torch.FloatTensor([fx])
+        fy = torch.FloatTensor([fy])
+        intra = torch.FloatTensor([intra])
+        band = torch.FloatTensor([band])
+        zernikes = torch.from_numpy(zernikes).float()
+        dof = torch.from_numpy(dof).float()
+
         output = {
-            "image": torch.from_numpy(img).float(),
-            "field_x": torch.FloatTensor([fx]),
-            "field_y": torch.FloatTensor([fy]),
-            "intrafocal": torch.FloatTensor([intra]),
-            "zernikes": torch.from_numpy(zernikes).float(),
+            "image": img,
+            "field_x": fx,
+            "field_y": fy,
+            "intrafocal": intra,
+            "band": band,
+            "zernikes": zernikes,
+            "dof": dof,
             "pntId": int(pntId[3:]),
             "obsId": int(obsId[3:]),
             "objId": int(objId[3:]),

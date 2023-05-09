@@ -1,16 +1,16 @@
 """Wrapping everything for WaveNet in Pytorch Lightning."""
 
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import pytorch_lightning as pl
 import torch
+import torch.nn.functional as F
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
-import wandb
 from ml_aos.dataloader import Donuts
-from ml_aos.wave_net import WaveNet as TorchWaveNet
-from ml_aos.plotting import plot_zernikes
-from ml_aos.utils import calc_mse
+from ml_aos.utils import convert_zernikes
+from ml_aos.wavenet import WaveNet
 
 
 class DonutLoader(pl.LightningDataModule):
@@ -22,6 +22,7 @@ class DonutLoader(pl.LightningDataModule):
         num_workers: int = 16,
         persistent_workers: bool = True,
         pin_memory: bool = True,
+        shuffle: bool = True,
         **kwargs: Any,
     ) -> None:
         """Load the simulated Donuts data.
@@ -37,6 +38,8 @@ class DonutLoader(pl.LightningDataModule):
         pin_memory: bool, default=True
             Whether to automatically put data in pinned memory (recommended
             whenever using a GPU).
+        shuffle: bool, default=True
+            Whether to shuffle the train dataloader.
         **kwargs
             See the keyword arguments in the Donuts class.
         """
@@ -59,7 +62,7 @@ class DonutLoader(pl.LightningDataModule):
 
     def train_dataloader(self) -> DataLoader:
         """Return the training DataLoader."""
-        return self._build_loader("train", shuffle=True)
+        return self._build_loader("train", shuffle=self.hparams.shuffle)
 
     def val_dataloader(self) -> DataLoader:
         """Return the validation DataLoader."""
@@ -70,126 +73,181 @@ class DonutLoader(pl.LightningDataModule):
         return self._build_loader("test", drop_last=False)
 
 
-class WaveNet(TorchWaveNet, pl.LightningModule):
-    """Pytorch Lightning wrapper for WaveNet."""
+class WaveNetSystem(pl.LightningModule):
+    """Pytorch Lightning system for training the WaveNet."""
 
-    def __init__(self, n_meta_layers: int = 3) -> None:
+    def __init__(
+        self,
+        cnn_model: str = "resnet18",
+        freeze_cnn: bool = False,
+        n_predictor_layers: tuple = (256,),
+        alpha: float = 0,
+        lr: float = 1e-3,
+        lr_schedule: bool = False,
+    ) -> None:
         """Create the WaveNet.
 
         Parameters
         ----------
-        n_meta_layers: int, default=3
-            Number of layers in the MetaNet inside the WaveNet. These
-            are the linear layers that map image features plus field
-            position to Zernike coefficients.
+        cnn_model: str, default="resnet18"
+            The name of the pre-trained CNN model from torchvision.
+        freeze_cnn: bool, default=False
+            Whether to freeze the CNN weights.
+        n_predictor_layers: tuple, default=(256)
+            Number of nodes in the hidden layers of the Zernike predictor network.
+            This does not include the output layer, which is fixed to 19.
+        alpha: float, default=0
+            Weight for the L2 penalty.
+        lr: float, default=1e-3
+            The initial learning rate for Adam.
+        lr_schedule: bool, default=True
+            Whether to use the ReduceLROnPlateau learning rate scheduler.
         """
-        # set up the WaveNet implemented in torch,
-        # as well as the LightningModule boilerplate
-        super().__init__(n_meta_layers=n_meta_layers)
-
-        # save the hyperparams in the log
+        super().__init__()
         self.save_hyperparameters()
+        self.wavenet = WaveNet(
+            cnn_model=cnn_model,
+            n_predictor_layers=n_predictor_layers,
+        )
 
-    def _predict(
-        self, batch: Dict[str, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Make predictions for a batch of donuts."""
-        # unpack the data
+        # define some parameters that will be accessed by
+        # the MachineLearningAlgorithm in ts_wep
+        self.camType = "LsstCam"
+        self.inputShape = (170, 170)
+
+    def predict_step(
+        self, batch: dict, batch_idx: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Predict Zernikes and return with truth."""
+        # unpack data from the dictionary
         img = batch["image"]
-        z_true = batch["zernikes"]
         fx = batch["field_x"]
         fy = batch["field_y"]
         intra = batch["intrafocal"]
+        band = batch["band"]
+        zk_true = batch["zernikes"]
+        dof_true = batch["dof"]  # noqa: F841
 
-        # predict the zernikes
-        z_pred = self(img, fx, fy, intra)
+        # predict zernikes
+        zk_pred = self.wavenet(img, fx, fy, intra, band)
 
-        return z_pred, z_true
+        return zk_pred, zk_true
 
-    def training_step(
-        self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> torch.Tensor:
-        """Calculate the loss of the training step."""
-        # calculate the MSE for the batch
-        z_pred, z_true = self._predict(batch)
-        mse = calc_mse(z_pred, z_true)
+    def calc_losses(self, batch: dict, batch_idx: int) -> tuple:
+        """Predict Zernikes and calculate the losses.
 
-        # log the mean rmse
-        self.log("train_rmse", torch.sqrt(mse).mean())
+        The two losses considered are:
+        - loss - mean of the SSE + L2 penalty (in arcsec^2)
+        - mRSSE - mean of the root of the SSE (in arcsec)
+        where SSE = Sum of Squared Errors, and the mean is taken over the batch
 
-        # loss = mean mse
-        loss = mse.mean()
-        self.log("train_loss", loss)
+        The mRSSE provides an estimate of the PSF degradation.
+        """
+        # predict zernikes
+        zk_pred, zk_true = self.predict_step(batch, batch_idx)
+
+        # convert to FWHM contributions
+        zk_pred = convert_zernikes(zk_pred)
+        zk_true = convert_zernikes(zk_true)
+
+        # pull out the weights from the final linear layer
+        *_, A, _ = self.wavenet.predictor.parameters()
+
+        # calculate loss
+        sse = F.mse_loss(zk_pred, zk_true, reduction="none").sum(dim=-1)
+        loss = sse.mean() + self.hparams.alpha * A.square().sum()
+        mRSSE = torch.sqrt(sse).mean()
+
+        return loss, mRSSE
+
+    def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+        """Execute training step on a batch."""
+        loss, mRSSE = self.calc_losses(batch, batch_idx)
+        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
+        self.log("train_mRSSE", mRSSE, sync_dist=True)
 
         return loss
 
-    def validation_step(
-        self, batch: Dict[str, torch.Tensor], batch_idx: int
-    ) -> Tuple[torch.Tensor, ...]:
-        """Perform validation step."""
-        # calculate the MSE for the validation sample
-        z_pred, z_true = self._predict(batch)
-        mse = calc_mse(z_pred, z_true)
+    def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+        """Execute validation step on a batch."""
+        loss, mRSSE = self.calc_losses(batch, batch_idx)
+        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
+        self.log("val_mRSSE", mRSSE, sync_dist=True)
 
-        # log the mean rmse
-        self.log("val_rmse", torch.sqrt(mse).mean())
+        return loss
 
-        # log the loss
-        self.log("val_loss", mse.mean())
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        """Configure the optimizer."""
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
-        # for the first batch of the validation set, plot the Zernikes
-        if batch_idx == 0 and wandb.run is not None:
-            # draw the Zernike figure and convert to wandb image for logging
-            fig = wandb.Image(plot_zernikes(z_true.cpu(), z_pred.cpu()))
-            # log the image
-            wandb.log({"zernikes": fig, "global_step": self.trainer.global_step})
-            del fig
+        if self.hparams.lr_schedule:
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": ReduceLROnPlateau(optimizer),
+                    "monitor": "val_loss",
+                    "frequency": 1,
+                },
+            }
+        else:
+            return optimizer
 
-        val_outputs = mse
-
-        return val_outputs
-
-    def validation_epoch_end(self, val_outputs: torch.Tensor) -> None:
-        """Compute metrics for the whole validation epoch."""
-
-        mse = torch.stack(val_outputs)
-        self.log("val_loss", mse.mean())
-        self.log("val_rmse", torch.sqrt(mse).mean())
-
-    @torch.jit.export
-    def tswep_predict(
+    def forward(
         self,
         img: torch.Tensor,
         fx: torch.Tensor,
         fy: torch.Tensor,
         focalFlag: torch.Tensor,
+        band: torch.Tensor,
     ) -> torch.Tensor:
-        """Predict Zernikes for a CompensableImage from ts_wep.
+        """Predict zernikes for production.
 
-        Parameters
-        ----------
-        img: torch.Tensor
-            The donut image
-        fx: torch.Tensor
-            x-axis field angle, in degrees
-        fy: torch.Tensor
-            y-axis field angle, in degrees
-        focalFlag: torch.Tensor
-            Float indicating whether the donut is intra (1.) or extra (2.) focal
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of Zernike coefficients
+        This method assumes the inputs have NOT been previously
+        transformed by ml_aos.utils.transform_inputs.
         """
-        # convert the field angles to radians
-        fx = torch.deg2rad(fx)
-        fy = torch.deg2rad(fy)
+        # rescale image to [0, 1]
+        img -= img.min()
+        img /= img.max()
 
-        # predict the zernikes in microns
-        z_pred = self(img, fx, fy, focalFlag)
+        # normalize image
+        image_mean = 0.347
+        image_std = 0.226
+        img = (img - image_mean) / image_std
 
-        # convert from microns to nanometers
-        z_pred *= 1e3
+        # convert angles to radians
+        fx *= torch.pi / 180
+        fy *= torch.pi / 180
 
-        return z_pred
+        # normalize angles
+        field_mean = 0.000
+        field_std = 0.021
+        fx = (fx - field_mean) / field_std
+        fy = (fy - field_mean) / field_std
+
+        # normalize the intrafocal flags
+        intra_mean = 0.5
+        intra_std = 0.5
+        focalFlag = (focalFlag - intra_mean) / intra_std
+
+        # get the effective wavelength in microns
+        band = {
+            0: torch.FloatTensor([[0.3671]]),
+            1: torch.FloatTensor([[0.4827]]),
+            2: torch.FloatTensor([[0.6223]]),
+            3: torch.FloatTensor([[0.7546]]),
+            4: torch.FloatTensor([[0.8691]]),
+            5: torch.FloatTensor([[0.9712]]),
+        }[band.item()]
+
+        # normalize the wavelength
+        band_mean = 0.710
+        band_std = 0.174
+        band = (band - band_mean) / band_std
+
+        # predict zernikes in microns
+        zk_pred = self.wavenet(img, fx, fy, focalFlag, band)
+
+        # convert to nanometers
+        zk_pred *= 1_000
+
+        return zk_pred
