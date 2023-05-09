@@ -48,6 +48,10 @@ def export_model(version: str, name: str) -> None:
         name = f"v{version}_" + str(time_stamp).split(".")[0].replace(" ", "_")
     out_path = root / "models" / (name + ".pt")
 
+    # print to terminal
+    print("Exporting", ckpt)
+    print("to", out_path)
+
     # save the torchscript model
     torch.jit.save(script, out_path)
 

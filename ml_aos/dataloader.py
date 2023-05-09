@@ -1,6 +1,6 @@
 """Pytorch DataSet for the AOS simulations."""
 import glob
-from typing import Any
+from typing import Any, Dict
 
 import numpy as np
 import torch
@@ -91,7 +91,7 @@ class Donuts(Dataset):
         """Return length of this Dataset."""
         return len(self.image_files[self.settings["mode"]])  # type: ignore
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Return simulation corresponding to the index.
 
         Parameters

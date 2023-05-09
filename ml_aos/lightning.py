@@ -81,6 +81,7 @@ class WaveNetSystem(pl.LightningModule):
         cnn_model: str = "resnet18",
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
+        alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
     ) -> None:
@@ -95,6 +96,8 @@ class WaveNetSystem(pl.LightningModule):
         n_predictor_layers: tuple, default=(256)
             Number of nodes in the hidden layers of the Zernike predictor network.
             This does not include the output layer, which is fixed to 19.
+        alpha: float, default=0
+            Weight for the L2 penalty.
         lr: float, default=1e-3
             The initial learning rate for Adam.
         lr_schedule: bool, default=True
@@ -134,7 +137,7 @@ class WaveNetSystem(pl.LightningModule):
         """Predict Zernikes and calculate the losses.
 
         The two losses considered are:
-        - mSSE - mean of the SSE (in arcsec^2)
+        - loss - mean of the SSE + L2 penalty (in arcsec^2)
         - mRSSE - mean of the root of the SSE (in arcsec)
         where SSE = Sum of Squared Errors, and the mean is taken over the batch
 
@@ -147,28 +150,31 @@ class WaveNetSystem(pl.LightningModule):
         zk_pred = convert_zernikes(zk_pred)
         zk_true = convert_zernikes(zk_true)
 
+        # pull out the weights from the final linear layer
+        *_, A, _ = self.wavenet.predictor.parameters()
+
         # calculate loss
         sse = F.mse_loss(zk_pred, zk_true, reduction="none").sum(dim=-1)
-        mSSE = sse.mean()
+        loss = sse.mean() + self.hparams.alpha * A.square().sum()
         mRSSE = torch.sqrt(sse).mean()
 
-        return mSSE, mRSSE
+        return loss, mRSSE
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         """Execute training step on a batch."""
-        mSSE, mRSSE = self.calc_losses(batch, batch_idx)
-        self.log("train_mSSE", mSSE, sync_dist=True, prog_bar=True)
+        loss, mRSSE = self.calc_losses(batch, batch_idx)
+        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
         self.log("train_mRSSE", mRSSE, sync_dist=True)
 
-        return mSSE
+        return loss
 
     def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         """Execute validation step on a batch."""
-        mSSE, mRSSE = self.calc_losses(batch, batch_idx)
-        self.log("val_mSSE", mSSE, sync_dist=True, prog_bar=True)
+        loss, mRSSE = self.calc_losses(batch, batch_idx)
+        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
         self.log("val_mRSSE", mRSSE, sync_dist=True)
 
-        return mSSE
+        return loss
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """Configure the optimizer."""
@@ -179,7 +185,7 @@ class WaveNetSystem(pl.LightningModule):
                 "optimizer": optimizer,
                 "lr_scheduler": {
                     "scheduler": ReduceLROnPlateau(optimizer),
-                    "monitor": "val_mSSE",
+                    "monitor": "val_loss",
                     "frequency": 1,
                 },
             }

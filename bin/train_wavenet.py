@@ -4,8 +4,8 @@ import pytorch_lightning as pl
 from ml_aos.lightning import DonutLoader, WaveNetSystem
 
 # create callbacks
-early_stopping = pl.callbacks.EarlyStopping("val_mSSE", patience=20)
-val_checkpoint = pl.callbacks.ModelCheckpoint(monitor="val_mSSE")
+early_stopping = pl.callbacks.EarlyStopping("val_loss", patience=20)
+val_checkpoint = pl.callbacks.ModelCheckpoint(monitor="val_loss")
 lr_monitor = pl.callbacks.LearningRateMonitor()
 
 # seed everything so we're deterministic
@@ -16,6 +16,7 @@ model = WaveNetSystem(
     lr=0.0003,
     n_predictor_layers=(171, 57),
     lr_schedule=True,
+    alpha=0,
 )
 
 data_loader = DonutLoader()
@@ -36,4 +37,3 @@ trainer = pl.Trainer(
 
 # fit!
 trainer.fit(model, data_loader)
-trainer.save_checkpoint()
