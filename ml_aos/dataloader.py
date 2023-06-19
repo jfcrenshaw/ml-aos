@@ -19,7 +19,7 @@ class Donuts(Dataset):
         transform: bool = True,
         fval: float = 0.1,
         ftest: float = 0.1,
-        data_dir: str = "/astro/store/epyc/users/jfc20/aos_sims",
+        data_dir: str = "/astro/store/epyc/users/jfc20/data/aos_sims",
         seed: int = 0,
         **kwargs: Any,
     ) -> None:
@@ -53,35 +53,36 @@ class Donuts(Dataset):
             "seed": seed,
         }
 
-        # get a list of all the pointings, and shuffle
-        pointings = [
-            file.split("/")[-1].split(".")[0] for file in glob.glob(f"{data_dir}/dof/*")
-        ]
-        rng = np.random.default_rng(seed)
-        rng.shuffle(pointings)
+        all_image_files = glob.glob(f"{data_dir}/images/*")
 
-        # separate the list of train, validation, and test pointings
+        # get a list of all the observations, and shuffle
+        obs_ids = list(
+            set([file.split("/")[-1].split(".")[1] for file in all_image_files])
+        )
+        rng = np.random.default_rng(seed)
+        rng.shuffle(obs_ids)
+
+        # separate the list of train, validation, and test observations
         frac_val = 0.1
         frac_test = 0.1
-        n_val = int(frac_val * len(pointings))
-        n_test = int(frac_test * len(pointings))
+        n_val = int(frac_val * len(obs_ids))
+        n_test = int(frac_test * len(obs_ids))
 
-        self.pointings = {
-            "train": pointings[n_val + n_test :],
-            "val": pointings[:n_val],
-            "test": pointings[n_val : n_val + n_test],
+        self.obs_ids = {
+            "train": obs_ids[n_val + n_test :],
+            "val": obs_ids[:n_val],
+            "test": obs_ids[n_val : n_val + n_test],
         }
 
         # partition the image files
-        all_image_files = glob.glob(f"{data_dir}/images/*")
         rng.shuffle(all_image_files)
         self.image_files = {
             mode: [
                 file
                 for file in all_image_files
-                if file.split("/")[-1].split(".")[0] in pntgs
+                if file.split("/")[-1].split(".")[1] in ids
             ]
-            for mode, pntgs in self.pointings.items()
+            for mode, ids in self.obs_ids.items()
         }
 
         # get the table of metadata for each observation
@@ -118,6 +119,9 @@ class Donuts(Dataset):
 
         # load the image
         img = np.load(img_file)
+
+        # crop out the central 160x160
+        img = img[5:-5, 5:-5]
 
         # get the IDs
         pntId, obsId, objId = img_file.split("/")[-1].split(".")[:3]

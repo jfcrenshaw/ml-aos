@@ -113,7 +113,7 @@ class WaveNetSystem(pl.LightningModule):
         # define some parameters that will be accessed by
         # the MachineLearningAlgorithm in ts_wep
         self.camType = "LsstCam"
-        self.inputShape = (170, 170)
+        self.inputShape = (160, 160)
 
     def predict_step(
         self, batch: dict, batch_idx: int
@@ -231,12 +231,12 @@ class WaveNetSystem(pl.LightningModule):
 
         # get the effective wavelength in microns
         band = {
-            0: torch.FloatTensor([[0.3671]]),
-            1: torch.FloatTensor([[0.4827]]),
-            2: torch.FloatTensor([[0.6223]]),
-            3: torch.FloatTensor([[0.7546]]),
-            4: torch.FloatTensor([[0.8691]]),
-            5: torch.FloatTensor([[0.9712]]),
+            1: torch.FloatTensor([[0.3671]]),
+            2: torch.FloatTensor([[0.4827]]),
+            3: torch.FloatTensor([[0.6223]]),
+            4: torch.FloatTensor([[0.7546]]),
+            5: torch.FloatTensor([[0.8691]]),
+            6: torch.FloatTensor([[0.9712]]),
         }[band.item()]
 
         # normalize the wavelength
