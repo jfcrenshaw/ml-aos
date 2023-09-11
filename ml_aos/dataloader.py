@@ -17,10 +17,7 @@ class Donuts(Dataset):
         self,
         mode: str = "train",
         transform: bool = True,
-        fval: float = 0.1,
-        ftest: float = 0.1,
         data_dir: str = "/astro/store/epyc/users/jfc20/data/aos_sims",
-        seed: int = 0,
         **kwargs: Any,
     ) -> None:
         """Load the simulated AOS donuts and zernikes in a Pytorch Dataset.
@@ -32,61 +29,62 @@ class Donuts(Dataset):
             or test.
         transform: bool, default=True
             Whether to apply transform_inputs from ml_aos.utils.
-        fval: float, default=0.1
-            Fraction of pointings in the validation set
-        ftest: float, default=2048
-            Fraction of pointings in the test set
         data_dir: str, default=/astro/store/epyc/users/jfc20/aos_sims
             Location of the data directory. The default location is where
             I stored the simulations on epyc.
-        seed: int, default = 0
-            Random seed for shuffling the data files.
         """
         # save the settings
         self.settings = {
             "mode": mode,
             "transform": transform,
             "data_dir": data_dir,
-            "fval": fval,
-            "ftest": ftest,
-            "data_dir": data_dir,
-            "seed": seed,
         }
 
+        # get a list of all the observations
         all_image_files = glob.glob(f"{data_dir}/images/*")
-
-        # get a list of all the observations, and shuffle
         obs_ids = list(
-            set([file.split("/")[-1].split(".")[1] for file in all_image_files])
+            set(
+                [int(file.split("/")[-1].split(".")[1][3:]) for file in all_image_files]
+            )
         )
-        rng = np.random.default_rng(seed)
-        rng.shuffle(obs_ids)
 
-        # separate the list of train, validation, and test observations
-        frac_val = 0.1
-        frac_test = 0.1
-        n_val = int(frac_val * len(obs_ids))
-        n_test = int(frac_test * len(obs_ids))
+        # get the table of metadata for each observation
+        observations = Table.read(f"{data_dir}/opSimTable.parquet")
+        observations = observations[obs_ids]
+        self.observations = observations
+
+        # now split the observations between train, test, val
+        train_ids = []
+        val_ids = []
+        test_ids = []
+
+        # we don't have enough u band, so let's put 2 in test and rest in train
+        group = observations[observations["lsstFilter"] == "u"]
+        test_ids.extend(group["observationId"][:2])
+        train_ids.extend(group["observationId"][2:])
+
+        # for the rest of the bands, let's put 2 each in test/val, and rest in train
+        for band in "grizy":
+            group = observations[observations["lsstFilter"] == band]
+            test_ids.extend(group["observationId"][:2])
+            val_ids.extend(group["observationId"][2:4])
+            train_ids.extend(group["observationId"][4:])
 
         self.obs_ids = {
-            "train": obs_ids[n_val + n_test :],
-            "val": obs_ids[:n_val],
-            "test": obs_ids[n_val : n_val + n_test],
+            "train": train_ids,
+            "val": val_ids,
+            "test": test_ids,
         }
 
         # partition the image files
-        rng.shuffle(all_image_files)
         self.image_files = {
             mode: [
                 file
                 for file in all_image_files
-                if file.split("/")[-1].split(".")[1] in ids
+                if int(file.split("/")[-1].split(".")[1][3:]) in ids
             ]
             for mode, ids in self.obs_ids.items()
         }
-
-        # get the table of metadata for each observation
-        self.observations = Table.read(f"{data_dir}/opSimTable.parquet")
 
     def __len__(self) -> int:
         """Return length of this Dataset."""

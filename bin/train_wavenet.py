@@ -24,7 +24,7 @@ data_loader = DonutLoader()
 trainer = pl.Trainer(
     deterministic=True,
     precision="16-mixed",
-    devices=2,
+    devices=1,
     accelerator="gpu",
     callbacks=[
         early_stopping,
